@@ -22,9 +22,20 @@ Source and patches: this repository (`app/` = untouched baseline, `app_tls13/` =
 | Hybrid key exchange with the ML-KEM NTTs on the **PowerQuad** accelerator (§5.2.1) | 217 ms (CPU-NTT arm of the same run: 179) | −18 % | yes, but +38 ms vs the CPU NTT |
 | **Final: hybrid key exchange + hybrid device authentication, key share precomputed during the TCP connect** (§4, item 6; run 21) | **201 ms** (inline arm of the same run: 224); handshake 52 ms ≈ classical TLS 1.3 | **−24 %** | yes, 50/50, 0 fallbacks |
 
+**Final side-by-side (same network session, runs 22 and 21):**
+
+| | Original firmware, unmodified TLS path (100 rounds) | Final configuration (50 rounds) |
+|---|---|---|
+| Full round, median | **247 ms** | **201 ms (−19 %)** |
+| Full round, average | 266 ms | 254 ms |
+| Full round, min / max | 239 / 697 ms | 152 / 704 ms |
+| TLS handshake, median | 127 ms | 52 ms + 77 ms device signing |
+| Failed rounds | 0 | 0 |
+
 **Result: the primary goal — hybrid authentication and key establishment with no increase in
 end-to-end latency over the RSA baseline — is met on this board, in portable C, without
-accelerating any post-quantum operation: 201 ms against 266 ms, 24 % faster.** The margin did
+accelerating any post-quantum operation: 201 ms against the original firmware's 247 ms median
+measured in the same session (−19 %), or against the 266 ms day-one baseline (−24 %).** The margin did
 not come from faster lattice maths; it came from three "software support" fixes the migration
 exposed and from hiding the client's key generation behind the TCP connect (§4). The
 post-quantum algorithms themselves cost 16 ms (ML-KEM-768) and ~90 ms (ML-DSA-44 + ECDSA
@@ -401,4 +412,5 @@ running in software!), consider Keccak assembly, ignore the NPU for lattice math
 | 18 | 5-bit coefficient limbs (fix), 4 arms | 217 (PQ) / 179 (CPU NTT) / 163 / 181 ms | 100/100 ok; PowerQuad NTT 23.8× slower, +37 ms |
 | 19 | deployment config (hybrid KEX + ML-DSA-44/ECDSA sign-only), CPU NTT vs PowerQuad NTT, 50 + 50 | **222** (CPU) / 281 (PQ) ms | PowerQuad arm would miss the 266 ms target |
 | 20 | deployment config, key share precomputed during TCP connect vs inline, 50 + 50 | 243 / 262 ms | handshake 56 vs 73 ms (−17); 50/50 ready in time |
-| **21** | **same, quiet network** | **201** / 224 ms | **final headline: −65 ms (−24 %) vs baseline**; handshake 52 vs 71 |
+| **21** | **same, quiet network** | **201** / 224 ms | **final headline**; handshake 52 vs 71 |
+| **22** | **original firmware, unmodified TLS path (`app_legacy/`), 100 rounds, same session** | **247** ms median, 266 avg | final comparison: 247 → 201 ms (−19 %) |

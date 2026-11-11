@@ -582,6 +582,41 @@ Precomputed key shares: 50 generated during TCP connect, 50 used, 0 not ready in
 * Run 20 (243 vs 262) and run 21 (201 vs 224) agree on the arm-to-arm difference (−19 to −23 ms)
   and differ only in network quality; compare arms within a run.
 
+## Run 22 — **the original firmware, unmodified TLS path, 100 rounds** (`app_legacy/`)
+
+The organisers' original code, taken from the delivered archive and built as `app_legacy/`
+(`make flash APP_NAME=app_legacy`). Changes: IPv4 server address (the original parsed IPv6
+only), DHCP wait 3 → 15 s, and a wrapper that repeats the original's single
+connect + handshake + GET 100 times and times each round with the RTOS tick; rounds after the
+first run without the certificate dump so UART output is not inside the timed window. The TLS
+path — TLS 1.2 ECDHE-RSA, entropy gathering + DRBG seed on every connection — is untouched.
+Same network session as run 21.
+
+```
+=== LEGACY benchmark summary: 100 ok, 0 failed ===
+                  min   median   avg    max  (ms)
+TLS handshake :  121    127    139    454
+Full round    :  239    247    266    697
+```
+
+### Final comparison — original firmware vs final configuration (runs 22 and 21)
+
+| | Original firmware (run 22, 100 rounds) | Final: TLS 1.3 + X25519MLKEM768 + ML-DSA-44/ECDSA device signature, key share precomputed (run 21, 50 rounds) | Δ |
+|---|---|---|---|
+| TLS handshake, median | 127 | 52 (+ 77 device signing) | — |
+| Full round, median | **247** | **201** | **−46 ms (−19 %)** |
+| Full round, average | 266 | 254 | −12 ms |
+| Full round, min | 239 | 152 | −87 ms |
+| Failed rounds | 0 / 100 | 0 / 50 | |
+| Bytes per round (tx / rx) | 464 / 2064 | 4958 / 3249 | +4.5 KB / +1.2 KB |
+
+Two baselines are now on record for the original code: 266 ms (run 1, day one, 15 rounds) and
+247 ms median / 266 ms average (run 22, 100 rounds, same session as the final run). Against the
+same-session median the final configuration is **−19 %**; against the day-one figure, −24 %.
+The average is closer because the final configuration's tail is longer: ML-DSA signing retries
+(auth max 294 ms) and the larger request (3.3 KB signature header) stretch the worst rounds,
+while the original's tail is network only.
+
 ## Comparison (medians)
 
 ### Against the agreed baseline (TLS 1.2, seed per connection, clean network: **266 ms**)
