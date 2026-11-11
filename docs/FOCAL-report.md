@@ -217,7 +217,7 @@ Tried and measured, **not adopted**:
 | Attempt | Result | Why not | Run |
 |---|---|---|---|
 | ML-KEM NTT on the PowerQuad matrix engine | correct, but NTT 23.8× slower; handshake **+37 ms**; deployment config 281 ms (misses target) | dense 16×16 products at 1.8 cycles/MAC vs an O(n log n) butterfly; limb splitting for a float32 datapath with an undocumented 16-bit output clamp (§5.2.1) | 14–19 |
-| NTT on the eIQ Neutron NPU | not executable | runtime and converter not in the public SDK; quantised int8 output path cannot deliver exact results; invocation overhead > the whole software NTT | — |
+| NTT on the eIQ Neutron NPU | not attempted | the on-board runtime is public (eIQ middleware, Neutron driver + firmware for MCXN) but the model compiler (`neutron-converter`, eIQ Toolkit) was not available during the hackathon; the quantised int8 operator path cannot deliver exact 32-bit sums; ceiling ≈ 1 % of round latency (§5.2) | — |
 | ML-DSA-65 | 379 ms, misses target | signing 155 ms average in portable C | 10 |
 
 Identified, **not done** (see §5.3 for the expected gains): ELS/PKC hardware elliptic-curve
@@ -263,10 +263,19 @@ Three measured/structural reasons it does not pay here:
    matrix products of 256×256 per transform, plus 256 reductions on the CPU. The PowerQuad's
    matrix engine computes in float32 and, as measured below, clamps outputs to 16 bits, so the
    operands must be split into limbs there too.
-3. **Data movement and invocation.** One software NTT is 132 µs. An NPU call goes through the
-   TensorFlow-Lite-Micro runtime with a pre-compiled "model" — hundreds of µs to ms per call, i.e.
-   slower than the CPU doing the NTT. The PowerQuad is memory-mapped and cheap to invoke, but its
-   operands are limited to 16×16.
+3. **Data movement and invocation.** One software NTT is 132 µs. The NPU executes a pre-compiled
+   "model" (microcode + weights + kernels produced on the host by NXP's `neutron-converter`,
+   part of the eIQ Toolkit). Through TensorFlow-Lite-Micro that is hundreds of µs per call; the
+   public eIQ middleware also exposes a raw driver (`NeutronDriver.h`: prepare a model once,
+   `neutronRunBlocking` per call) that would be cheaper, but the operator semantics — int8 in,
+   requantised int8 out — are the same. The PowerQuad is memory-mapped and cheap to invoke, but
+   its operands are limited to 16×16.
+
+   *Availability, corrected after the hackathon runs:* the Neutron driver and firmware libraries
+   for the MCXN are in the public `mcux-sdk-middleware-eiq` repository (manifest group `eiq`,
+   not cloned in this workspace); the compiler is in the eIQ Toolkit, a free download from
+   nxp.com behind an NXP account. So the NPU *could* be driven; it was not, because the ceiling
+   is ≈ 1 % of round latency and the exactness problem has no supported solution.
 
 #### 5.2.1 The PowerQuad NTT, implemented and measured (runs 14–18)
 
@@ -326,7 +335,7 @@ Keccak hardware on this part.
 | Key share generated during the TCP connect (§4, item 6) | **−17 ms** handshake | small (helper task + hook in the key-share writer) | **done** (run 20) |
 | ML-DSA-44 instead of ML-DSA-65 | −60…−100 ms signing | one define | **done** |
 | PowerQuad NTT (§5.2.1) | **measured: +37 ms per hybrid handshake**, NTT 23.8× slower than the CPU | medium | **done — negative result**, kept as a switchable benchmark arm |
-| NPU NTT | ≤ 0 (overhead ≥ gain); toolchain not in the public SDK | high | negative result (analysis) |
+| NPU NTT | ≤ 1 % even if exact; the supported int8 operator path is not exact; needs the eIQ Toolkit compiler | high | negative result (analysis); runtime available, compiler not obtained |
 
 ---
 

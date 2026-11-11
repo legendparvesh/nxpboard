@@ -397,10 +397,14 @@ timing hazard. The real cause turned out to be arithmetic after all — see run 
 * Ceiling from the measured throughput: a four-step NTT (16-point and 8-point stages, ≈ 25 k MACs)
   would need ≥ 40 k cycles on the engine before overheads — still 2× the CPU. There is no
   formulation in which this engine wins the NTT.
-* The NPU (eIQ Neutron) is not reachable from this SDK checkout (eIQ middleware lives in an
-  NXP-internal manifest) and requires the host-side eIQ model converter; its int8×int8 datapath
-  would need 4 (ML-KEM) to 9 (ML-DSA) limb products per transform plus per-invocation runtime
-  overhead of hundreds of µs, versus 132 µs for the whole software NTT.
+* The NPU (eIQ Neutron) was not attempted. Correction to an earlier note: the eIQ middleware
+  *is* public (`github.com/nxp-mcuxpresso/mcux-sdk-middleware-eiq`, manifest group `eiq`), it is
+  just not cloned in this workspace; it ships the MCXN Neutron driver and firmware libraries and
+  a raw driver API (`NeutronDriver.h`). What it does not ship is the compiler: the microcode,
+  weights and kernels blobs come from `neutron-converter` in NXP's eIQ Toolkit (free download,
+  NXP account). The arithmetic objection stands: an int8×int8 datapath with requantised output
+  would need 4 (ML-KEM) to 9 (ML-DSA) limb products per transform and cannot return exact 32-bit
+  sums through the supported operator path.
 
 ## Run 15 — PowerQuad NTT, barrier after `PQ_WaitDone` + engine self-check, four arms, 100 rounds
 
