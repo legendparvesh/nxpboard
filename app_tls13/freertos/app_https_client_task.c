@@ -91,6 +91,7 @@ static uint32_t build_arms(uint32_t tls_mode, bench_arm_t *arms)
     const bench_arm_t hybridpq = {"MLKEM(PQ-NTT)  ", 3, 1, 0, 1}; /* NTTs on the PowerQuad */
     const bench_arm_t auth     = {"MLKEM+MLDSAauth", 3, 1, 1, 0};
     const bench_arm_t authso   = {"MLKEM+MLDSAsign", 3, 1, 2, 0}; /* sign only, no self-verify */
+    const bench_arm_t authsopq = {"MLKEM+MLDSA(PQ)", 3, 1, 2, 1}; /* same, ML-KEM NTTs on the PowerQuad */
     uint32_t n = 0;
 
     switch (tls_mode)
@@ -104,6 +105,7 @@ static uint32_t build_arms(uint32_t tls_mode, bench_arm_t *arms)
         case 8: arms[n++] = auth; break;
         case 9: arms[n++] = authso; arms[n++] = auth; arms[n++] = hybrid; arms[n++] = tls13; arms[n++] = tls12; break;
         case 10: arms[n++] = hybridpq; arms[n++] = hybrid; arms[n++] = tls13; arms[n++] = tls12; break;
+        case 11: arms[n++] = authso; arms[n++] = authsopq; break;
         case 0:
         default: arms[n++] = tls13; arms[n++] = tls12; break;
     }

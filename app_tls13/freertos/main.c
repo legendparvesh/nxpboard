@@ -80,8 +80,10 @@
 #ifndef EXAMPLE_TLS_MODE
 /*! @brief Benchmark arms, interleaved round by round (see app_https_client_task.h):
  *  0 = TLS1.3 vs TLS1.2, 2 = TLS1.2, 3 = TLS1.3, 4 = hybrid vs TLS1.3,
- *  5 = hybrid only, 6 = hybrid vs TLS1.3 vs TLS1.2 (three arms). */
-#define EXAMPLE_TLS_MODE 10
+ *  5 = hybrid only, 6 = hybrid vs TLS1.3 vs TLS1.2, 9 = five-arm headline,
+ *  10 = PowerQuad NTT vs CPU NTT (KEX only), 11 = deployment config (hybrid KEX + ML-DSA-44/ECDSA
+ *  sign-only auth) with ML-KEM NTT on CPU vs on the PowerQuad (two arms). */
+#define EXAMPLE_TLS_MODE 11
 #endif /* EXAMPLE_TLS_MODE */
 
 #ifndef EXAMPLE_MAX_REQUEST_LENGTH

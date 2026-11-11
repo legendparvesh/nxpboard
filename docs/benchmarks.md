@@ -497,6 +497,31 @@ ML-KEM-768 keypair + decaps, NTT on PowerQuad: 3712139 + 4097193 cycles = 52.062
 * Keep `MLKEM(PQ-NTT)` as the measured negative result; the deployment configuration runs the NTT
   on the Cortex-M33 (`app_pq_ntt_enabled = 0`).
 
+## Run 19 — deployment configuration, ML-KEM NTT on CPU vs PowerQuad, two arms, 100 rounds
+
+`EXAMPLE_TLS_MODE=11`: `MLKEM+MLDSAsign` (TLS 1.3, X25519MLKEM768, ML-DSA-44 + ECDSA P-256
+device signature, sign only) vs `MLKEM+MLDSA(PQ)` (identical, ML-KEM NTTs on the PowerQuad).
+50 rounds per arm. Network good (TCP connect medians 21–22 ms), a few stalls (rounds 21–22,
+50–51, 79–81) visible in max/avg only.
+
+| Arm | TCP connect | TLS handshake | Hybrid auth | HTTP GET | Full round | ok |
+|---|---|---|---|---|---|---|
+| MLKEM+MLDSAsign (CPU NTT) | 22 | **74** | 74 | 48 | **222** | 50/50 |
+| MLKEM+MLDSA(PQ) | 21 | **112** | 85 | 48 | **281** | 50/50 |
+
+(medians, ms). Auth averages: ML-DSA sign 86.8 vs 95.8 ms (randomised retry count, not related
+to the NTT path), ECDSA sign 11.4 ms both. Request 4958 B sent per round (3.3 KB signature header).
+
+### Analysis
+
+* Confirms run 18 on the full deployment configuration: the PowerQuad arm's handshake is **+38 ms**
+  (112 vs 74); the auth column is the same operation in both arms and differs only by the
+  ML-DSA retry lottery (medians 74 vs 85, averages 87 vs 96; min 38 in both).
+* Full round: **222 ms with the CPU NTT (−44 ms vs the 266 ms baseline), 281 ms with the
+  PowerQuad NTT (+15 ms — would miss the target).** The accelerator path turns a passing
+  configuration into a failing one.
+* The 222 ms here vs 238 ms in run 13 is network and ML-DSA-retry variance, not a code change.
+
 ## Comparison (medians)
 
 ### Against the agreed baseline (TLS 1.2, seed per connection, clean network: **266 ms**)

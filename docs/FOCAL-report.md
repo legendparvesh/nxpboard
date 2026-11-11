@@ -347,3 +347,4 @@ running in software!), consider Keccak assembly, ignore the NPU for lattice math
 | 15–16 | barriers, interrupt masking, data-level completion wait | — | fault unchanged: not a timing hazard |
 | 17 | per-block verify build | — | root cause: engine clamps outputs at +32 767 |
 | 18 | 5-bit coefficient limbs (fix), 4 arms | 217 (PQ) / 179 (CPU NTT) / 163 / 181 ms | 100/100 ok; PowerQuad NTT 23.8× slower, +37 ms |
+| 19 | deployment config (hybrid KEX + ML-DSA-44/ECDSA sign-only), CPU NTT vs PowerQuad NTT, 50 + 50 | **222** (CPU) / 281 (PQ) ms | PowerQuad arm would miss the 266 ms target |
