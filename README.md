@@ -6,6 +6,13 @@ how long the TLS handshake took. Start from this scaffold and
 accelerate the NTT operations in the hybrid PQC key exchange using the
 MCX N947's NPU IP.
 
+## FOCAL results and migration guide
+
+* [docs/FOCAL-report.md](docs/FOCAL-report.md) — results, comparison vs baseline, acceleration analysis, migration guide.
+* [docs/benchmarks.md](docs/benchmarks.md) — raw log of every benchmark run.
+* `app/` is the untouched baseline; `app_tls13/` is the migrated firmware (TLS 1.3, X25519MLKEM768, ML-DSA-44 + ECDSA device auth).
+  Build it with `make patch-sdk && make flash APP_NAME=app_tls13`.
+
 ## Hardware
 
 * development board
