@@ -62,7 +62,7 @@ mcux_add_macro(
 
 mcux_add_linker_symbol(
     SYMBOLS "__stack_size__=0x400\
-             __heap_size__=0x18000"
+             __heap_size__=0x20000"
 )
 
 include(${SdkRootDirPath}/${board_root}/${board}/focal_challenge/freertos/reconfig.cmake OPTIONAL)

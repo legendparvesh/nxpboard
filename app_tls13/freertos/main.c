@@ -111,7 +111,9 @@
 
 #ifndef HTTPS_CLIENT_THREAD_STACKSIZE
 /*! @brief Stack size of the HTTPS client thread in words. */
-#define HTTPS_CLIENT_THREAD_STACKSIZE 4096
+/* Words (4 B). 16 KB was enough for classical TLS; ML-KEM-768 keygen/decaps keep
+ * ~8-10 KB of polynomial vectors on the stack on top of the handshake, so 32 KB. */
+#define HTTPS_CLIENT_THREAD_STACKSIZE 8192
 #endif
 
 #ifndef HTTPS_CLIENT_THREAD_PRIO
@@ -145,6 +147,19 @@ static struct netif netif;
 /*!
  * @brief Main function.
  */
+/*!
+ * @brief FreeRTOS stack-overflow hook (configCHECK_FOR_STACK_OVERFLOW=2).
+ * Silent stack corruption looks like a hang; this names the culprit instead.
+ */
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    (void)xTask;
+    LWIP_PLATFORM_DIAG(("\r\n!!! STACK OVERFLOW in task '%s' !!!\r\n", pcTaskName));
+    taskDISABLE_INTERRUPTS();
+    for (;;)
+        ;
+}
+
 int main(void)
 {
     BOARD_InitHardware();

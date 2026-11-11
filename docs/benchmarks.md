@@ -120,9 +120,51 @@ NIST SP 800-90A DRBG; each connection still draws fresh ClientHello randomness a
 ephemeral key, so forward secrecy is unaffected. Assumption: the MCXN947 TRNG is a sound
 entropy source. A multi-task application would guard the shared DRBG with a mutex.
 
+## Run 7 — step 3: three arms interleaved, **hybrid X25519MLKEM768** / TLS 1.3 / TLS 1.2, 100 rounds
+
+`app_tls13/`, `EXAMPLE_TLS_MODE=6`, `APP_DRBG_SEED_ONCE=1`, SDK mbedTLS patched with
+`patches/mbedtls3x-x25519mlkem768.patch`, ML-KEM-768 from mlkem-native (portable C, no
+acceleration). Rounds cycle hybrid → TLS 1.3 → TLS 1.2 (34/33/33). 100/100 OK.
+Clean network (TCP connect median 25–26 ms in all arms).
+
+| Phase (median, ms) | TLS 1.2 | TLS 1.3 classic | TLS 1.3 + X25519MLKEM768 |
+|---|---|---|---|
+| TCP connect (control) | 26 | 25 | 26 |
+| TLS setup | 0 | 0 | 0 |
+| TLS handshake | 156 | 61 | **102** |
+| HTTP GET | 25 | 93 | 92 |
+| **Full round** | 213 | 181 | **231** |
+| Full round, min | 180 | 153 | 195 |
+| Handshake bytes tx / rx | 309 / 1841 | 279 / 1797 | **1465 / 2885** |
+| Round bytes tx / rx | 452 / 2064 | 428 / 2157 | 1614 / 3249 |
+
+Correctness: every hybrid round completed the handshake *and* the HTTP GET returned 200, which
+requires both sides to have derived the same `ML-KEM ss || X25519 ss`. Bytes match the spec:
++1184 B (ML-KEM-768 encapsulation key) sent, +1088 B (ciphertext) received.
+
+Cost of the PQ half vs TLS 1.3 classic: **+41 ms handshake, +50 ms full round, +2.3 KB on the
+wire**; flash 448 → 460 KB (+11 KB incl. Keccak); RAM: client task stack 16 → 32 KB (ML-KEM
+keygen/decaps keep ~8–10 KB of polynomial vectors on the stack), +3.5 KB handshake state.
+
+Lesson learned: with the original 16 KB task stack the hybrid handshake *hung silently*
+(configCHECK_FOR_STACK_OVERFLOW was off). Enabled overflow checking + hook; now 32 KB.
+
 ## Comparison (medians)
 
 ### Against the agreed baseline (TLS 1.2, seed per connection, clean network: **266 ms**)
+
+| Configuration | Handshake | Full round | Δ vs baseline |
+|---|---|---|---|
+| TLS 1.2, seed per connection (baseline, run 1) | 140 | 266 | — |
+| TLS 1.3 classic, seed once (run 7) | 61 | 181 | −85 ms (−32 %) |
+| **TLS 1.3 + X25519MLKEM768, seed once (run 7)** | 102 | **231** | **−35 ms (−13 %)** |
+
+→ **Hybrid post-quantum key establishment meets the "no increase in end-to-end latency" goal
+on this board without any hardware acceleration.** The remaining budget (~35 ms) plus whatever
+acceleration recovers from the 41 ms ML-KEM cost is what hybrid *authentication* (ML-DSA) will
+have to fit into.
+
+### Earlier (pre-hybrid) comparison
 
 | Configuration | Handshake | Full round | Δ vs baseline |
 |---|---|---|---|
