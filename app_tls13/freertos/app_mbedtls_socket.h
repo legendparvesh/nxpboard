@@ -35,6 +35,9 @@ typedef struct
     bool verbose;
     /* Set by the caller before connect(): 2 = force TLS 1.2, 3 = force TLS 1.3, 0 = negotiate. */
     int tls_version;
+    /* Set by the caller before connect(): 1 = offer X25519MLKEM768 first (hybrid PQ key
+     * exchange, TLS 1.3 only), 0 = classical X25519 / P-256 only. */
+    int hybrid_kex;
 
     /* Filled in by connect(): benchmark data for this connection. */
     uint32_t tcp_connect_ms; /* wall-clock time of the TCP connect() */

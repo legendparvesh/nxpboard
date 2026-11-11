@@ -24,11 +24,24 @@ mcux_add_source(
             examples/focal_challenge/freertos/app_https_client_task.c
             examples/focal_challenge/freertos/core_http_config.h
             examples/focal_challenge/freertos/app_mbedtls_user_config.h
+            # ML-KEM-768 (mlkem-native, single-compilation-unit build) for X25519MLKEM768.
+            # focal_third_party -> ../../../third_party (symlink made by `make graft`).
+            examples/focal_third_party/mlkem-native/mlkem/mlkem_native.c
 )
 
 mcux_add_include(
     BASE_PATH ${SdkRootDirPath}
     INCLUDES examples/focal_challenge/freertos
+             examples/focal_third_party/mlkem-native/mlkem
+)
+
+# mlkem-native configuration: ML-KEM-768 only, portable C (no asm backend on
+# Cortex-M33), deterministic API only so no global randombytes() is needed —
+# the TLS layer feeds it coins from mbedTLS's own RNG.
+mcux_add_macro(
+    CC "-DMLK_CONFIG_PARAMETER_SET=768\
+        -DMLK_CONFIG_NAMESPACE_PREFIX=mlkem\
+        -DMLK_CONFIG_NO_RANDOMIZED_API"
 )
 
 # MBEDTLS_USER_CONFIG_FILE is appended to the NXP port config by the SDK, so

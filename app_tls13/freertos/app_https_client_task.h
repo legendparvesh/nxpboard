@@ -19,7 +19,15 @@ typedef struct https_client_task_context
     size_t max_request_len;
     size_t max_response_len;
     uint32_t iterations; /* number of connect+GET rounds to benchmark */
-    uint32_t tls_mode;   /* 0 = alternate TLS 1.3 / TLS 1.2 each round (A/B), 2 = TLS 1.2 only, 3 = TLS 1.3 only */
+    /* Which configurations to benchmark; multi-arm modes interleave the arms round by round
+     * so every arm sees the same network conditions:
+     *   0 = TLS 1.3 classic vs TLS 1.2            (2 arms)
+     *   2 = TLS 1.2 only
+     *   3 = TLS 1.3 classic only
+     *   4 = TLS 1.3 hybrid vs TLS 1.3 classic     (2 arms)
+     *   5 = TLS 1.3 hybrid (X25519MLKEM768) only
+     *   6 = TLS 1.3 hybrid vs TLS 1.3 classic vs TLS 1.2  (3 arms) */
+    uint32_t tls_mode;
 } https_client_task_context_t;
 
 void app_https_client_task_init(https_client_task_context_t *context,

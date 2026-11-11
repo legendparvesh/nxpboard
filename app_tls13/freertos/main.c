@@ -78,9 +78,10 @@
 #endif /* EXAMPLE_ITERATIONS */
 
 #ifndef EXAMPLE_TLS_MODE
-/*! @brief 0 = A/B: alternate TLS 1.3 (odd rounds) and TLS 1.2 (even rounds) so both
- *  see the same network conditions; 2 = TLS 1.2 only; 3 = TLS 1.3 only. */
-#define EXAMPLE_TLS_MODE 0
+/*! @brief Benchmark arms, interleaved round by round (see app_https_client_task.h):
+ *  0 = TLS1.3 vs TLS1.2, 2 = TLS1.2, 3 = TLS1.3, 4 = hybrid vs TLS1.3,
+ *  5 = hybrid only, 6 = hybrid vs TLS1.3 vs TLS1.2 (three arms). */
+#define EXAMPLE_TLS_MODE 6
 #endif /* EXAMPLE_TLS_MODE */
 
 #ifndef EXAMPLE_MAX_REQUEST_LENGTH
@@ -203,7 +204,7 @@ static void init_task(void *arg)
     };
 
     LWIP_PLATFORM_DIAG(("***********************************************************\r\n"));
-    LWIP_PLATFORM_DIAG(("FOCAL hackathon - FRDM-MCXN947 handshake benchmark [step 2: TLS 1.3, A/B mode %d]\r\n",
+    LWIP_PLATFORM_DIAG(("FOCAL hackathon - FRDM-MCXN947 handshake benchmark [step 3: hybrid X25519MLKEM768, mode %d]\r\n",
                         EXAMPLE_TLS_MODE));
     LWIP_PLATFORM_DIAG(("Target: " EXAMPLE_HOST " port %d path " EXAMPLE_PATH "\r\n", EXAMPLE_PORT));
     LWIP_PLATFORM_DIAG(("***********************************************************\r\n"));

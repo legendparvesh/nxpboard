@@ -21,7 +21,8 @@ typedef struct
     app_mbedtls_socket_t tls;
 } app_corehttp_ctx_t;
 
-NetworkContext_t *app_corehttp_create_context(char *host, uint16_t port, int tls_version, bool verbose)
+NetworkContext_t *app_corehttp_create_context(char *host, uint16_t port, int tls_version, int hybrid_kex,
+                                              bool verbose)
 {
     app_corehttp_ctx_t *ctx = pvPortMalloc(sizeof(app_corehttp_ctx_t));
     if (ctx == NULL)
@@ -33,6 +34,7 @@ NetworkContext_t *app_corehttp_create_context(char *host, uint16_t port, int tls
     memset(ctx, 0, sizeof(*ctx));
     ctx->tls.verbose     = verbose;
     ctx->tls.tls_version = tls_version;
+    ctx->tls.hybrid_kex  = hybrid_kex;
 
     int ret = app_mbedtls_socket_connect(&ctx->tls, host, port);
     if (ret != 0)

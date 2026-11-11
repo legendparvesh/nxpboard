@@ -161,6 +161,23 @@ int app_mbedtls_socket_connect(void *param, char *host, uint16_t port)
     mbedtls_ssl_conf_authmode(&sock->ssl_config, MBEDTLS_SSL_VERIFY_NONE);
     mbedtls_ssl_conf_rng(&sock->ssl_config, mbedtls_ctr_drbg_random, rng);
 
+    /* Key-exchange groups, in order of preference. The hybrid group is only
+     * meaningful for TLS 1.3; the TLS 1.2 code path ignores it. */
+    static const uint16_t groups_hybrid[] = {
+#if defined(MBEDTLS_SSL_TLS1_3_HYBRID_MLKEM)
+        MBEDTLS_SSL_IANA_TLS_GROUP_X25519_MLKEM768,
+#endif
+        MBEDTLS_SSL_IANA_TLS_GROUP_X25519,
+        MBEDTLS_SSL_IANA_TLS_GROUP_SECP256R1,
+        0,
+    };
+    static const uint16_t groups_classic[] = {
+        MBEDTLS_SSL_IANA_TLS_GROUP_X25519,
+        MBEDTLS_SSL_IANA_TLS_GROUP_SECP256R1,
+        0,
+    };
+    mbedtls_ssl_conf_groups(&sock->ssl_config, sock->hybrid_kex ? groups_hybrid : groups_classic);
+
     /* Pin the protocol version per connection so the A/B benchmark can
      * alternate TLS 1.2 and TLS 1.3 under identical network conditions. */
     if (sock->tls_version == 2)

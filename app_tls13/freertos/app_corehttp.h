@@ -26,8 +26,10 @@ typedef struct
     uint32_t total_rx;
 } app_corehttp_stats_t;
 
-/* tls_version: 2 = force TLS 1.2, 3 = force TLS 1.3, 0 = negotiate. */
-NetworkContext_t *app_corehttp_create_context(char *host, uint16_t port, int tls_version, bool verbose);
+/* tls_version: 2 = force TLS 1.2, 3 = force TLS 1.3, 0 = negotiate.
+ * hybrid_kex:  1 = offer X25519MLKEM768 first, 0 = classical groups only. */
+NetworkContext_t *app_corehttp_create_context(char *host, uint16_t port, int tls_version, int hybrid_kex,
+                                              bool verbose);
 void app_corehttp_destroy_context(NetworkContext_t *ctx);
 void app_corehttp_get_stats(NetworkContext_t *ctx, app_corehttp_stats_t *stats);
 int32_t app_corehttp_send(NetworkContext_t *ctx, const void *buf, size_t size);

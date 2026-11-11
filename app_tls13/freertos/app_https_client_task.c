@@ -3,6 +3,12 @@
  * All rights reserved.
  *
  * SPDX-License-Identifier: BSD-3-Clause
+ *
+ * FOCAL hackathon benchmark task: runs N rounds of
+ *   TCP connect + TLS handshake + HTTP GET
+ * against the challenge server, interleaving several "arms" (TLS version /
+ * key-exchange configurations) so that every arm experiences the same network
+ * conditions, and prints min / median / avg / max per phase and per arm.
  */
 
 #include <stdbool.h>
@@ -18,11 +24,22 @@
 #include "app_corehttp.h"
 #include "app_mbedtls_socket.h"
 
+/* One benchmark arm = one TLS configuration. */
+typedef struct
+{
+    const char *label; /* printed per round and in the summary */
+    int tls_version;   /* 2 or 3 */
+    int hybrid_kex;    /* 1 = offer X25519MLKEM768 first */
+} bench_arm_t;
+
+#define MAX_ARMS 3
+
 static void client_task(void *args);
 static void sort_u32(uint32_t *v, uint32_t n);
 static void print_stat_line(const char *label, uint32_t *samples, uint32_t n);
-static void print_stat_line_for(const char *label, const uint32_t *samples, const uint8_t *ver, uint32_t n,
+static void print_stat_line_for(const char *label, const uint32_t *samples, const uint8_t *arm_of, uint32_t n,
                                 uint8_t want, uint32_t *scratch);
+static uint32_t build_arms(uint32_t tls_mode, bench_arm_t *arms);
 
 void app_https_client_task_init(https_client_task_context_t *context,
                                 const configSTACK_DEPTH_TYPE stack_depth,
@@ -48,6 +65,27 @@ void app_https_client_task_init(https_client_task_context_t *context,
     }
 }
 
+/* Translate tls_mode (see app_https_client_task.h) into a list of arms. */
+static uint32_t build_arms(uint32_t tls_mode, bench_arm_t *arms)
+{
+    const bench_arm_t tls12   = {"TLS1.2        ", 2, 0};
+    const bench_arm_t tls13   = {"TLS1.3        ", 3, 0};
+    const bench_arm_t hybrid  = {"TLS1.3+MLKEM  ", 3, 1};
+    uint32_t n = 0;
+
+    switch (tls_mode)
+    {
+        case 2: arms[n++] = tls12; break;
+        case 3: arms[n++] = tls13; break;
+        case 4: arms[n++] = hybrid; arms[n++] = tls13; break;
+        case 5: arms[n++] = hybrid; break;
+        case 6: arms[n++] = hybrid; arms[n++] = tls13; arms[n++] = tls12; break;
+        case 0:
+        default: arms[n++] = tls13; arms[n++] = tls12; break;
+    }
+    return n;
+}
+
 static void client_task(void *args)
 {
     https_client_task_context_t *context = (https_client_task_context_t *)args;
@@ -67,59 +105,62 @@ static void client_task(void *args)
 
     const uint32_t iterations = (context->iterations == 0U) ? 1U : context->iterations;
 
+    bench_arm_t arms[MAX_ARMS];
+    const uint32_t n_arms = build_arms(context->tls_mode, arms);
+
     /* Buffers are allocated once and reused for every round. */
     uint8_t *hdr_buf  = pvPortMalloc(context->max_request_len);
     uint8_t *resp_buf = pvPortMalloc(context->max_response_len);
 
-    /* Per-round samples (for median) and accumulated byte counts. */
+    /* Per-round samples (for median), which arm each sample belongs to, and a scratch buffer. */
     uint32_t *setup_ms_s = pvPortMalloc(iterations * sizeof(uint32_t));
     uint32_t *tcp_ms     = pvPortMalloc(iterations * sizeof(uint32_t));
     uint32_t *hs_ms      = pvPortMalloc(iterations * sizeof(uint32_t));
     uint32_t *http_ms    = pvPortMalloc(iterations * sizeof(uint32_t));
     uint32_t *tot_ms     = pvPortMalloc(iterations * sizeof(uint32_t));
     uint32_t *scratch    = pvPortMalloc(iterations * sizeof(uint32_t));
-    uint8_t *ver         = pvPortMalloc(iterations * sizeof(uint8_t));
+    uint8_t *arm_of      = pvPortMalloc(iterations * sizeof(uint8_t));
 
     if (hdr_buf == NULL || resp_buf == NULL || setup_ms_s == NULL || tcp_ms == NULL || hs_ms == NULL ||
-        http_ms == NULL || tot_ms == NULL || scratch == NULL || ver == NULL)
+        http_ms == NULL || tot_ms == NULL || scratch == NULL || arm_of == NULL)
     {
         PRINTF("Failed to allocate benchmark buffers.\r\n");
         goto free_exit; /* vPortFree(NULL) is a no-op */
     }
-    uint32_t ok_rounds = 0, fail_rounds = 0;
-    /* Byte counters indexed by TLS minor version (2 or 3). */
-    uint32_t hs_tx_sum[4] = {0}, hs_rx_sum[4] = {0}, tx_sum[4] = {0}, rx_sum[4] = {0}, ver_count[4] = {0};
 
-    const bool ab_mode = (context->tls_mode == 0U);
+    uint32_t ok_rounds = 0, fail_rounds = 0;
+    uint32_t hs_tx_sum[MAX_ARMS] = {0}, hs_rx_sum[MAX_ARMS] = {0}, tx_sum[MAX_ARMS] = {0}, rx_sum[MAX_ARMS] = {0};
+    uint32_t arm_ok[MAX_ARMS] = {0}, arm_fail[MAX_ARMS] = {0};
 
     PRINTF("\r\n=== Benchmark: %lu rounds of TCP connect + TLS handshake + GET %s ===\r\n",
            (unsigned long)iterations, context->path);
-    if (ab_mode)
+    PRINTF("=== %lu arm(s), interleaved round by round:", (unsigned long)n_arms);
+    for (uint32_t a = 0; a < n_arms; a++)
     {
-        PRINTF("=== A/B mode: odd rounds TLS 1.3, even rounds TLS 1.2 (same network, interleaved) ===\r\n");
+        PRINTF(" [%s]", arms[a].label);
     }
-    else
-    {
-        PRINTF("=== TLS 1.%lu only ===\r\n", (unsigned long)context->tls_mode);
-    }
+    PRINTF(" ===\r\n");
 
     for (uint32_t round = 1; round <= iterations; round++)
     {
-        const int tls_version = ab_mode ? ((round % 2U) ? 3 : 2) : (int)context->tls_mode;
+        const uint32_t arm_idx = (round - 1U) % n_arms;
+        const bench_arm_t *arm = &arms[arm_idx];
 
-        /* Full protocol/cipher/certificate dump on the first round of each version. */
-        const bool verbose = (round == 1U) || (ab_mode && round == 2U);
+        /* Full protocol/cipher/certificate dump on the first round of each arm. */
+        const bool verbose = (round <= n_arms);
 
         /* Round timer: TCP connect + TLS handshake + HTTP request/response. */
         const TickType_t t_round_start = xTaskGetTickCount();
 
-        NetworkContext_t *nwk_ctx =
-            app_corehttp_create_context(context->host, context->port, tls_version, verbose);
+        NetworkContext_t *nwk_ctx = app_corehttp_create_context(context->host, context->port, arm->tls_version,
+                                                                arm->hybrid_kex, verbose);
         const TickType_t t_connected = xTaskGetTickCount();
         if (nwk_ctx == NULL)
         {
-            PRINTF("[%2lu/%lu] TLS connection failed\r\n", (unsigned long)round, (unsigned long)iterations);
+            PRINTF("[%3lu/%lu] %s | TLS connection failed\r\n", (unsigned long)round, (unsigned long)iterations,
+                   arm->label);
             fail_rounds++;
+            arm_fail[arm_idx]++;
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
         }
@@ -147,10 +188,11 @@ static void client_task(void *args)
         status = HTTPClient_InitializeRequestHeaders(&req_headers, &req_info);
         if (status != HTTPSuccess)
         {
-            PRINTF("[%2lu/%lu] Failed to build request headers.\r\n", (unsigned long)round,
+            PRINTF("[%3lu/%lu] Failed to build request headers.\r\n", (unsigned long)round,
                    (unsigned long)iterations);
             app_corehttp_destroy_context(nwk_ctx);
             fail_rounds++;
+            arm_fail[arm_idx]++;
             continue;
         }
 
@@ -177,9 +219,10 @@ static void client_task(void *args)
         if (status != HTTPSuccess)
         {
             app_corehttp_destroy_context(nwk_ctx);
-            PRINTF("[%2lu/%lu] HTTP request failed: %d\r\n", (unsigned long)round, (unsigned long)iterations,
-                   status);
+            PRINTF("[%3lu/%lu] %s | HTTP request failed: %d\r\n", (unsigned long)round, (unsigned long)iterations,
+                   arm->label, status);
             fail_rounds++;
+            arm_fail[arm_idx]++;
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
         }
@@ -200,8 +243,8 @@ static void client_task(void *args)
 
         app_corehttp_destroy_context(nwk_ctx);
 
-        PRINTF("[%3lu/%lu] TLS1.%d | setup %3lu | tcp %4lu | handshake %4lu (tx %3lu B, rx %5lu B) | http %4lu | round %4lu ms | HTTP %d\r\n",
-               (unsigned long)round, (unsigned long)iterations, tls_version, (unsigned long)setup_ms,
+        PRINTF("[%3lu/%lu] %s | setup %3lu | tcp %4lu | handshake %4lu (tx %4lu B, rx %5lu B) | http %4lu | round %4lu ms | HTTP %d\r\n",
+               (unsigned long)round, (unsigned long)iterations, arm->label, (unsigned long)setup_ms,
                (unsigned long)stats.tcp_connect_ms, (unsigned long)stats.handshake_ms,
                (unsigned long)stats.handshake_tx, (unsigned long)stats.handshake_rx, (unsigned long)http_round_ms,
                (unsigned long)round_ms, resp.statusCode);
@@ -211,14 +254,14 @@ static void client_task(void *args)
         hs_ms[ok_rounds]      = stats.handshake_ms;
         http_ms[ok_rounds]    = http_round_ms;
         tot_ms[ok_rounds]     = round_ms;
-        ver[ok_rounds]        = (uint8_t)tls_version;
+        arm_of[ok_rounds]     = (uint8_t)arm_idx;
         ok_rounds++;
 
-        hs_tx_sum[tls_version & 3] += stats.handshake_tx;
-        hs_rx_sum[tls_version & 3] += stats.handshake_rx;
-        tx_sum[tls_version & 3] += stats.total_tx;
-        rx_sum[tls_version & 3] += stats.total_rx;
-        ver_count[tls_version & 3]++;
+        hs_tx_sum[arm_idx] += stats.handshake_tx;
+        hs_rx_sum[arm_idx] += stats.handshake_rx;
+        tx_sum[arm_idx] += stats.total_tx;
+        rx_sum[arm_idx] += stats.total_rx;
+        arm_ok[arm_idx]++;
 
         /* Give the server a moment to tear down the previous connection. */
         vTaskDelay(pdMS_TO_TICKS(200));
@@ -226,24 +269,25 @@ static void client_task(void *args)
 
     PRINTF("\r\n=== Benchmark summary: %lu ok, %lu failed ===\r\n", (unsigned long)ok_rounds,
            (unsigned long)fail_rounds);
-    for (int v = 3; v >= 2; v--)
+    for (uint32_t a = 0; a < n_arms; a++)
     {
-        const uint32_t n = ver_count[v];
+        const uint32_t n = arm_ok[a];
+        PRINTF("\r\n--- %s: %lu ok, %lu failed ---\r\n", arms[a].label, (unsigned long)n,
+               (unsigned long)arm_fail[a]);
         if (n == 0U)
         {
             continue;
         }
-        PRINTF("\r\n--- TLS 1.%d: %lu rounds ---\r\n", v, (unsigned long)n);
         PRINTF("                  min   median   avg    max  (ms)\r\n");
-        print_stat_line_for("TLS setup    ", setup_ms_s, ver, ok_rounds, (uint8_t)v, scratch);
-        print_stat_line_for("TCP connect  ", tcp_ms, ver, ok_rounds, (uint8_t)v, scratch);
-        print_stat_line_for("TLS handshake", hs_ms, ver, ok_rounds, (uint8_t)v, scratch);
-        print_stat_line_for("HTTP GET     ", http_ms, ver, ok_rounds, (uint8_t)v, scratch);
-        print_stat_line_for("Full round   ", tot_ms, ver, ok_rounds, (uint8_t)v, scratch);
-        PRINTF("Handshake I/O : avg tx %lu B, rx %lu B\r\n", (unsigned long)(hs_tx_sum[v] / n),
-               (unsigned long)(hs_rx_sum[v] / n));
-        PRINTF("Round I/O     : avg tx %lu B, rx %lu B\r\n", (unsigned long)(tx_sum[v] / n),
-               (unsigned long)(rx_sum[v] / n));
+        print_stat_line_for("TLS setup    ", setup_ms_s, arm_of, ok_rounds, (uint8_t)a, scratch);
+        print_stat_line_for("TCP connect  ", tcp_ms, arm_of, ok_rounds, (uint8_t)a, scratch);
+        print_stat_line_for("TLS handshake", hs_ms, arm_of, ok_rounds, (uint8_t)a, scratch);
+        print_stat_line_for("HTTP GET     ", http_ms, arm_of, ok_rounds, (uint8_t)a, scratch);
+        print_stat_line_for("Full round   ", tot_ms, arm_of, ok_rounds, (uint8_t)a, scratch);
+        PRINTF("Handshake I/O : avg tx %lu B, rx %lu B\r\n", (unsigned long)(hs_tx_sum[a] / n),
+               (unsigned long)(hs_rx_sum[a] / n));
+        PRINTF("Round I/O     : avg tx %lu B, rx %lu B\r\n", (unsigned long)(tx_sum[a] / n),
+               (unsigned long)(rx_sum[a] / n));
     }
     if (ok_rounds > 0U)
     {
@@ -253,7 +297,7 @@ static void client_task(void *args)
     PRINTF("=== Done ===\r\n");
 
 free_exit:
-    vPortFree(ver);
+    vPortFree(arm_of);
     vPortFree(scratch);
     vPortFree(tot_ms);
     vPortFree(http_ms);
@@ -266,7 +310,7 @@ free_exit:
     vTaskDelete(NULL);
 }
 
-/* Insertion sort is plenty for a few dozen samples. */
+/* Insertion sort is plenty for a few hundred samples. */
 static void sort_u32(uint32_t *v, uint32_t n)
 {
     for (uint32_t i = 1; i < n; i++)
@@ -282,14 +326,14 @@ static void sort_u32(uint32_t *v, uint32_t n)
     }
 }
 
-/* Copy the samples whose TLS version matches `want` into `scratch`, then print. */
-static void print_stat_line_for(const char *label, const uint32_t *samples, const uint8_t *ver, uint32_t n,
+/* Copy the samples belonging to arm `want` into `scratch`, then print. */
+static void print_stat_line_for(const char *label, const uint32_t *samples, const uint8_t *arm_of, uint32_t n,
                                 uint8_t want, uint32_t *scratch)
 {
     uint32_t m = 0;
     for (uint32_t i = 0; i < n; i++)
     {
-        if (ver[i] == want)
+        if (arm_of[i] == want)
         {
             scratch[m++] = samples[i];
         }

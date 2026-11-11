@@ -20,8 +20,14 @@
  * TLS 1.3 stacks (OpenSSL servers by default) emit. */
 #define MBEDTLS_SSL_TLS1_3_COMPATIBILITY_MODE
 
-/* TLS 1.2 stays enabled in the port config so the client can still fall back;
- * app_mbedtls_socket.c pins the minimum version to TLS 1.3 so the benchmark is
- * unambiguous. */
+/* TLS 1.2 stays enabled in the port config so the A/B benchmark can pin either
+ * version per connection (see app_mbedtls_socket.c). */
+
+/* --- Step 3: hybrid key exchange X25519MLKEM768 --------------------------- */
+
+/* Enables the FOCAL patch in the SDK's mbedTLS (patches/mbedtls3x-x25519mlkem768.patch):
+ * named group 0x11EC, ML-KEM-768 half provided by mlkem-native (third_party/).
+ * The group is only used if the application puts it in mbedtls_ssl_conf_groups(). */
+#define MBEDTLS_SSL_TLS1_3_HYBRID_MLKEM
 
 #endif /* APP_MBEDTLS_USER_CONFIG_H */

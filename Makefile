@@ -82,6 +82,30 @@ graft:
 	@echo "Grafting $(APP_NAME)/ into the SDK tree"
 	@ln -sfn ../../../$(APP_NAME) $(SDK_DIR)/examples/focal_challenge
 	@ln -sfn ../../../../../$(APP_NAME)/board_port $(SDK_DIR)/examples/_boards/$(BOARD)/focal_challenge
+	@ln -sfn ../../../third_party $(SDK_DIR)/examples/focal_third_party
+
+# The SDK's mbedTLS has no ML-KEM; patches/ carries our X25519MLKEM768 addition.
+# `make patch-sdk` applies it (idempotent), `make unpatch-sdk` reverts it.
+MBEDTLS_DIR   := $(SDK_DIR)/middleware/mbedtls3x
+SDK_PATCH     := $(ROOT)/patches/mbedtls3x-x25519mlkem768.patch
+
+.PHONY: patch-sdk unpatch-sdk patch-export
+
+patch-sdk:
+	@cd $(MBEDTLS_DIR) && \
+	if git apply --check --reverse $(SDK_PATCH) >/dev/null 2>&1; then \
+		echo "mbedtls3x: patch already applied"; \
+	else \
+		git apply $(SDK_PATCH) && echo "mbedtls3x: patch applied"; \
+	fi
+
+unpatch-sdk:
+	@cd $(MBEDTLS_DIR) && git apply --reverse $(SDK_PATCH) && echo "mbedtls3x: patch reverted"
+
+# Regenerate patches/ from the current (edited) SDK mbedTLS tree.
+patch-export:
+	@mkdir -p $(ROOT)/patches
+	@cd $(MBEDTLS_DIR) && git diff > $(SDK_PATCH) && echo "Wrote $(SDK_PATCH)" && git diff --stat
 
 setup: $(VENV) $(TOOLCHAIN) sdk graft
 	@echo "Setup complete."
