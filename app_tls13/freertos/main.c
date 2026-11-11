@@ -81,12 +81,13 @@
 /*! @brief Benchmark arms, interleaved round by round (see app_https_client_task.h):
  *  0 = TLS1.3 vs TLS1.2, 2 = TLS1.2, 3 = TLS1.3, 4 = hybrid vs TLS1.3,
  *  5 = hybrid only, 6 = hybrid vs TLS1.3 vs TLS1.2 (three arms). */
-#define EXAMPLE_TLS_MODE 6
+#define EXAMPLE_TLS_MODE 7
 #endif /* EXAMPLE_TLS_MODE */
 
 #ifndef EXAMPLE_MAX_REQUEST_LENGTH
-/*! @brief Maximum length of HTTP request. */
-#define EXAMPLE_MAX_REQUEST_LENGTH 256
+/*! @brief Maximum length of HTTP request. The hybrid-auth header carries a
+ *  base64 ML-DSA-65 signature (3309 B -> 4412 chars) plus ECDSA, so ~5 KB. */
+#define EXAMPLE_MAX_REQUEST_LENGTH 6144
 #endif /* EXAMPLE_MAX_REQUEST_LENGTH */
 
 #ifndef EXAMPLE_MAX_RESPONSE_LENGTH
@@ -219,7 +220,7 @@ static void init_task(void *arg)
     };
 
     LWIP_PLATFORM_DIAG(("***********************************************************\r\n"));
-    LWIP_PLATFORM_DIAG(("FOCAL hackathon - FRDM-MCXN947 handshake benchmark [step 3: hybrid X25519MLKEM768, mode %d]\r\n",
+    LWIP_PLATFORM_DIAG(("FOCAL hackathon - FRDM-MCXN947 handshake benchmark [step 4: hybrid KEX + ML-DSA-65/ECDSA auth, mode %d]\r\n",
                         EXAMPLE_TLS_MODE));
     LWIP_PLATFORM_DIAG(("Target: " EXAMPLE_HOST " port %d path " EXAMPLE_PATH "\r\n", EXAMPLE_PORT));
     LWIP_PLATFORM_DIAG(("***********************************************************\r\n"));

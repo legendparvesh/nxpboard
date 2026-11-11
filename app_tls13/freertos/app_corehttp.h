@@ -32,6 +32,12 @@ NetworkContext_t *app_corehttp_create_context(char *host, uint16_t port, int tls
                                               bool verbose);
 void app_corehttp_destroy_context(NetworkContext_t *ctx);
 void app_corehttp_get_stats(NetworkContext_t *ctx, app_corehttp_stats_t *stats);
+
+/* TLS exporter (RFC 8446 §7.5): `len` bytes bound to this session, labelled `label`. 0 on success. */
+int app_corehttp_export_keying_material(NetworkContext_t *ctx, const char *label, uint8_t *out, size_t len);
+
+/* Peer certificate (NULL if none). */
+const mbedtls_x509_crt *app_corehttp_peer_cert(NetworkContext_t *ctx);
 int32_t app_corehttp_send(NetworkContext_t *ctx, const void *buf, size_t size);
 int32_t app_corehttp_recv(NetworkContext_t *ctx, void *buf, size_t size);
 

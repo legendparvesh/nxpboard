@@ -68,6 +68,20 @@ void app_corehttp_destroy_context(NetworkContext_t *ctx)
     vPortFree(c);
 }
 
+int app_corehttp_export_keying_material(NetworkContext_t *ctx, const char *label, uint8_t *out, size_t len)
+{
+    app_corehttp_ctx_t *c = (app_corehttp_ctx_t *)ctx;
+
+    return mbedtls_ssl_export_keying_material(&c->tls.ctx_ssl, out, len, label, strlen(label), NULL, 0, 0);
+}
+
+const mbedtls_x509_crt *app_corehttp_peer_cert(NetworkContext_t *ctx)
+{
+    app_corehttp_ctx_t *c = (app_corehttp_ctx_t *)ctx;
+
+    return mbedtls_ssl_get_peer_cert(&c->tls.ctx_ssl);
+}
+
 void app_corehttp_get_stats(NetworkContext_t *ctx, app_corehttp_stats_t *stats)
 {
     app_corehttp_ctx_t *c = (app_corehttp_ctx_t *)ctx;

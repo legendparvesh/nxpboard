@@ -30,4 +30,10 @@
  * The group is only used if the application puts it in mbedtls_ssl_conf_groups(). */
 #define MBEDTLS_SSL_TLS1_3_HYBRID_MLKEM
 
+/* --- Step 4: hybrid authentication ------------------------------------------ */
+
+/* RFC 5705/8446 exporter: the device signs a value derived from the live TLS
+ * session, so its ML-DSA + ECDSA signatures are bound to this connection. */
+#define MBEDTLS_SSL_KEYING_MATERIAL_EXPORT
+
 #endif /* APP_MBEDTLS_USER_CONFIG_H */

@@ -26,15 +26,27 @@ mcux_add_source(
             examples/focal_challenge/freertos/app_mbedtls_user_config.h
             examples/focal_challenge/freertos/app_pqc_bench.h
             examples/focal_challenge/freertos/app_pqc_bench.c
+            examples/focal_challenge/freertos/app_hybrid_auth.h
+            examples/focal_challenge/freertos/app_hybrid_auth.c
+            examples/focal_challenge/freertos/app_mldsa_config.h
             # ML-KEM-768 (mlkem-native, single-compilation-unit build) for X25519MLKEM768.
             # focal_third_party -> ../../../third_party (symlink made by `make graft`).
             examples/focal_third_party/mlkem-native/mlkem/mlkem_native.c
+            # ML-DSA-65 (mldsa-native, single-compilation-unit build) for hybrid authentication.
+            examples/focal_third_party/mldsa-native/mldsa/mldsa_native.c
 )
 
 mcux_add_include(
     BASE_PATH ${SdkRootDirPath}
     INCLUDES examples/focal_challenge/freertos
              examples/focal_third_party/mlkem-native/mlkem
+             examples/focal_third_party/mldsa-native/mldsa
+)
+
+# mldsa-native configuration lives in app_mldsa_config.h (parameter set 65,
+# heap-backed buffers, reduced RAM, deterministic API).
+mcux_add_macro(
+    CC "-DMLD_CONFIG_FILE=\\\"app_mldsa_config.h\\\""
 )
 
 # mlkem-native configuration: ML-KEM-768 only, portable C (no asm backend on
@@ -64,7 +76,7 @@ mcux_add_macro(
 
 mcux_add_linker_symbol(
     SYMBOLS "__stack_size__=0x400\
-             __heap_size__=0x20000"
+             __heap_size__=0x30000"
 )
 
 include(${SdkRootDirPath}/${board_root}/${board}/focal_challenge/freertos/reconfig.cmake OPTIONAL)
