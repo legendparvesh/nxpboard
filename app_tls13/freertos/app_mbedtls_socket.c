@@ -23,6 +23,7 @@
 
 /* App */
 #include "app_ca_bundle.h"
+#include "app_keyshare.h"
 #include "app_mbedtls_socket.h"
 
 #ifndef MBEDTLS_DEBUG_THRESHOLD
@@ -135,14 +136,20 @@ int app_mbedtls_socket_connect(void *param, char *host, uint16_t port)
     {
         PRINTF("Connecting to [%s]:%u...\r\n", host, (unsigned)port);
     }
+    /* Step 5: have the helper task prepare the hybrid key share while this task
+     * is blocked in connect(); wait for it right after, so the helper never runs
+     * concurrently with this task's own PSA use during the handshake. */
+    if (sock->hybrid_kex && app_keyshare_enabled) app_keyshare_request();
     const TickType_t t_tcp_start = xTaskGetTickCount();
     ret = connect(sock->lwip_fd, (struct sockaddr *)&sa, sa_len);
+    const TickType_t t_tcp_end = xTaskGetTickCount();
+    app_keyshare_wait(); /* returns at once if nothing was requested */
     if (ret != 0)
     {
         PRINTF("Unable to connect() to [%s]:%u\r\n", host, (unsigned)port);
         goto close_exit;
     }
-    sock->tcp_connect_ms = (uint32_t)(xTaskGetTickCount() - t_tcp_start) * (uint32_t)portTICK_PERIOD_MS;
+    sock->tcp_connect_ms = (uint32_t)(t_tcp_end - t_tcp_start) * (uint32_t)portTICK_PERIOD_MS;
 
     ret = mbedtls_ssl_config_defaults(&sock->ssl_config, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
                                       MBEDTLS_SSL_PRESET_DEFAULT);

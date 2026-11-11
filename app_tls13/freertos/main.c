@@ -82,8 +82,9 @@
  *  0 = TLS1.3 vs TLS1.2, 2 = TLS1.2, 3 = TLS1.3, 4 = hybrid vs TLS1.3,
  *  5 = hybrid only, 6 = hybrid vs TLS1.3 vs TLS1.2, 9 = five-arm headline,
  *  10 = PowerQuad NTT vs CPU NTT (KEX only), 11 = deployment config (hybrid KEX + ML-DSA-44/ECDSA
- *  sign-only auth) with ML-KEM NTT on CPU vs on the PowerQuad (two arms). */
-#define EXAMPLE_TLS_MODE 11
+ *  sign-only auth) with ML-KEM NTT on CPU vs on the PowerQuad (two arms), 12 = deployment config
+ *  with the hybrid key share precomputed during the TCP connect vs inline (two arms). */
+#define EXAMPLE_TLS_MODE 12
 #endif /* EXAMPLE_TLS_MODE */
 
 #ifndef EXAMPLE_MAX_REQUEST_LENGTH

@@ -33,7 +33,9 @@ typedef struct https_client_task_context
      *       vs TLS 1.3 vs TLS 1.2 (5 arms)
      *  10 = hybrid KEX with NTTs on the PowerQuad vs hybrid KEX (CPU NTT) vs TLS 1.3 vs TLS 1.2
      *  11 = hybrid KEX + hybrid AUTH sign-only (ML-DSA-44 + ECDSA), ML-KEM NTT on CPU vs on the
-     *       PowerQuad (2 arms, the deployment configuration and its accelerated variant) */
+     *       PowerQuad (2 arms, the deployment configuration and its accelerated variant)
+     *  12 = deployment configuration with the hybrid key share precomputed during the TCP
+     *       connect vs generated inline (2 arms) */
     uint32_t tls_mode;
 } https_client_task_context_t;
 

@@ -20,6 +20,7 @@ Source and patches: this repository (`app/` = untouched baseline, `app_tls13/` =
 | **Hybrid key exchange + hybrid device authentication** (ML-DSA-44 + ECDSA P-256) | **238 ms** | **−11 %** | yes, 100 % of rounds |
 | same with ML-DSA-65 instead of ML-DSA-44 | 379 ms | +42 % | yes, but misses target |
 | Hybrid key exchange with the ML-KEM NTTs on the **PowerQuad** accelerator (§5.2.1) | 217 ms (CPU-NTT arm of the same run: 179) | −18 % | yes, but +38 ms vs the CPU NTT |
+| Hybrid key exchange + hybrid auth, **key share precomputed during the TCP connect** (§4, item 6) | 243 ms (inline arm of the same run: 262); handshake 56 ms = classical TLS 1.3 | −9 % | yes, 50/50, 0 fallbacks |
 
 **Result: the primary goal — hybrid authentication and key establishment with no increase in
 end-to-end latency over the RSA baseline — is met on this board, in portable C, without
@@ -154,13 +155,29 @@ Two more that cost time to find:
 4. **Silent stack overflow.** ML-KEM's polynomial vectors on the stack of a 16 KB task hung the
    board with no message; `configCHECK_FOR_STACK_OVERFLOW` was off in the SDK example. Turn it on
    before touching PQC; size tasks for ML-KEM (~10 KB extra) and never put ML-DSA on a task stack
-   (44–68 KB working set → heap or static buffers).
+   (44–68 KB working set → heap or static buffers). It bit twice: the Kconfig symbol is a
+   boolean, so `=2` in `prj.conf` was silently ignored and the check stayed off until run 20,
+   when a 12 KB helper task (measured peak 14 KB) froze the board again. Check the *generated*
+   `FreeRTOSConfig_Gen.h`, not the setting you wrote.
 5. **ML-DSA signing latency is a distribution, not a number.** The rejection-sampling loop runs a
    geometric number of attempts (FIPS 204 expectation: 4.25 for ML-DSA-44, 5.1 for ML-DSA-65).
    Measured ML-DSA-44: 23.7 ms per attempt; medians between 44 and 118 ms from run to run with
    identical code; average 77–100 ms; worst observed 253 ms (ML-DSA-65: 364 ms). Deadline-driven
    designs must budget for the tail (p99 ≈ 10 attempts), or pre-compute signatures where the
    protocol allows.
+
+And one that gave latency back without touching the maths:
+
+6. **Generate the key share while the TCP connect is in flight.** The client task is idle for
+   ~20 ms waiting for the SYN-ACK; the ML-KEM-768 keypair (6.7 ms) and X25519 keygen (10.8 ms)
+   do not depend on the server. A low-priority helper task generates them in that window and the
+   patched mbedTLS takes them when it writes the ClientHello (`app_keyshare.c`; falls back to
+   inline generation if the share is not ready). Run 20: handshake **73 → 56 ms** (−17 ms,
+   50/50 shares ready in time), full round 262 → 243 ms. The hybrid TLS 1.3 handshake now costs
+   the same as a classical one (55 ms). Each key share is used for exactly one connection; CPU
+   time and energy are unchanged, only the critical path shrinks. Note the ordering constraint:
+   mbedTLS here has no threading support, so the client waits for the helper right after
+   `connect()` returns — the two tasks never use PSA at the same time.
 
 ---
 
@@ -261,6 +278,7 @@ Keccak hardware on this part.
 | **ELS/PKC hardware for X25519 and ECDSA.** The accelerator exists and the hash path proves it works (SHA-256 is 20× faster than software SHA-3), but the SDK's mbedTLS 3.x PSA port does not route elliptic-curve operations to it. | X25519 16 → ~2 ms; ECDSA sign 11 → ~2 ms, verify 20 → ~3 ms: **≈ 15 ms on every arm, ≈ 25 ms more for hybrid auth** | SDK integration | identified, not done |
 | **Optimised Keccak assembly** for Cortex-M (2–3× over portable C; mlkem-native/mldsa-native accept a custom FIPS-202 backend) | ≈ 4–5 ms (ML-KEM), ≈ 10–20 ms (ML-DSA sign) | medium | not done |
 | TLS 1.3, DRBG-once, TCP window (§4) | **−91 ms** | trivial | **done** |
+| Key share generated during the TCP connect (§4, item 6) | **−17 ms** handshake | small (helper task + hook in the key-share writer) | **done** (run 20) |
 | ML-DSA-44 instead of ML-DSA-65 | −60…−100 ms signing | one define | **done** |
 | PowerQuad NTT (§5.2.1) | **measured: +37 ms per hybrid handshake**, NTT 23.8× slower than the CPU | medium | **done — negative result**, kept as a switchable benchmark arm |
 | NPU NTT | ≤ 0 (overhead ≥ gain); toolchain not in the public SDK | high | negative result (analysis) |
@@ -348,3 +366,4 @@ running in software!), consider Keccak assembly, ignore the NPU for lattice math
 | 17 | per-block verify build | — | root cause: engine clamps outputs at +32 767 |
 | 18 | 5-bit coefficient limbs (fix), 4 arms | 217 (PQ) / 179 (CPU NTT) / 163 / 181 ms | 100/100 ok; PowerQuad NTT 23.8× slower, +37 ms |
 | 19 | deployment config (hybrid KEX + ML-DSA-44/ECDSA sign-only), CPU NTT vs PowerQuad NTT, 50 + 50 | **222** (CPU) / 281 (PQ) ms | PowerQuad arm would miss the 266 ms target |
+| 20 | deployment config, key share precomputed during TCP connect vs inline, 50 + 50 | **243** / 262 ms | handshake 56 vs 73 ms (−17); 50/50 ready in time |

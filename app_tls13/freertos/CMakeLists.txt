@@ -29,6 +29,9 @@ mcux_add_source(
             examples/focal_challenge/freertos/app_hybrid_auth.h
             examples/focal_challenge/freertos/app_hybrid_auth.c
             examples/focal_challenge/freertos/app_mldsa_config.h
+            # Hybrid key share precomputed during the TCP connect
+            examples/focal_challenge/freertos/app_keyshare.h
+            examples/focal_challenge/freertos/app_keyshare.c
             # ML-KEM NTT on the PowerQuad matrix engine (mlkem-native native backend)
             examples/focal_challenge/freertos/app_pq_ntt.h
             examples/focal_challenge/freertos/app_pq_ntt.c

@@ -30,6 +30,11 @@
  * The group is only used if the application puts it in mbedtls_ssl_conf_groups(). */
 #define MBEDTLS_SSL_TLS1_3_HYBRID_MLKEM
 
+/* Step 5: let the application hand mbedTLS a hybrid key share it prepared while
+ * the TCP connect was in flight (app_keyshare.c). Falls back to inline
+ * generation when none is ready. */
+#define MBEDTLS_SSL_TLS1_3_HYBRID_MLKEM_PRECOMPUTED
+
 /* --- Step 4: hybrid authentication ------------------------------------------ */
 
 /* RFC 5705/8446 exporter: the device signs a value derived from the live TLS

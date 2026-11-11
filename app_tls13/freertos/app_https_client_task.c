@@ -27,6 +27,7 @@
 #include "app_pqc_bench.h"
 #include "app_hybrid_auth.h"
 #include "app_pq_ntt.h"
+#include "app_keyshare.h"
 
 #ifndef APP_PQC_BENCH
 /* 1 = run the crypto micro-benchmarks once before the TLS rounds. */
@@ -42,6 +43,7 @@ typedef struct
     int hybrid_auth;   /* 1 = sign the TLS exporter with ML-DSA + ECDSA, self-verify, send it;
                         * 2 = sign and send only (deployment mode: the peer verifies) */
     int pq_ntt;        /* 1 = run ML-KEM's forward NTTs on the PowerQuad matrix engine */
+    int precompute;    /* 1 = generate the hybrid key share during the TCP connect (app_keyshare.c) */
 } bench_arm_t;
 
 #define MAX_ARMS 5
@@ -92,6 +94,7 @@ static uint32_t build_arms(uint32_t tls_mode, bench_arm_t *arms)
     const bench_arm_t auth     = {"MLKEM+MLDSAauth", 3, 1, 1, 0};
     const bench_arm_t authso   = {"MLKEM+MLDSAsign", 3, 1, 2, 0}; /* sign only, no self-verify */
     const bench_arm_t authsopq = {"MLKEM+MLDSA(PQ)", 3, 1, 2, 1}; /* same, ML-KEM NTTs on the PowerQuad */
+    const bench_arm_t authsopre = {"MLKEM+MLDSA+pre", 3, 1, 2, 0, 1}; /* same as authso, key share precomputed */
     uint32_t n = 0;
 
     switch (tls_mode)
@@ -106,6 +109,7 @@ static uint32_t build_arms(uint32_t tls_mode, bench_arm_t *arms)
         case 9: arms[n++] = authso; arms[n++] = auth; arms[n++] = hybrid; arms[n++] = tls13; arms[n++] = tls12; break;
         case 10: arms[n++] = hybridpq; arms[n++] = hybrid; arms[n++] = tls13; arms[n++] = tls12; break;
         case 11: arms[n++] = authso; arms[n++] = authsopq; break;
+        case 12: arms[n++] = authsopre; arms[n++] = authso; break;
         case 0:
         default: arms[n++] = tls13; arms[n++] = tls12; break;
     }
@@ -137,6 +141,7 @@ static void client_task(void *args)
     app_pq_ntt_bench();
 #endif
     const bool auth_ready = (app_hybrid_auth_init() == 0);
+    if (app_keyshare_init() != 0) PRINTF("keyshare: helper task not started, key shares generated inline\r\n");
 #if APP_PQC_BENCH
     app_hybrid_auth_bench();
 #endif
@@ -192,7 +197,8 @@ static void client_task(void *args)
         const bool verbose = (round <= n_arms);
 
         /* Route ML-KEM's NTTs to the PowerQuad for this arm (read by the mlkem-native hook). */
-        app_pq_ntt_enabled = arm->pq_ntt;
+        app_pq_ntt_enabled   = arm->pq_ntt;
+        app_keyshare_enabled = arm->precompute;
 
         /* Round timer: TCP connect + TLS handshake [+ auth] + HTTP request/response. */
         const TickType_t t_round_start = xTaskGetTickCount();
@@ -407,6 +413,13 @@ static void client_task(void *args)
     {
         PRINTF("\r\n(median is the number to compare: single network stalls distort min/avg/max;\r\n");
         PRINTF(" TCP connect is the network-quality control: it contains no crypto)\r\n");
+    }
+    {
+        uint32_t ks_gen = 0, ks_taken = 0, ks_fallback = 0, ks_stack = 0;
+        app_keyshare_stats(&ks_gen, &ks_taken, &ks_fallback, &ks_stack);
+        if (ks_gen + ks_fallback > 0U)
+            PRINTF("Precomputed key shares: %lu generated during TCP connect, %lu used, %lu not ready in time (inline fallback); helper stack peak %lu B\r\n",
+                   (unsigned long)ks_gen, (unsigned long)ks_taken, (unsigned long)ks_fallback, (unsigned long)ks_stack);
     }
     PRINTF("=== Done ===\r\n");
 
