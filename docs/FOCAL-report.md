@@ -19,6 +19,7 @@ Source and patches: this repository (`app/` = untouched baseline, `app_tls13/` =
 | **Hybrid key exchange**: TLS 1.3 + X25519MLKEM768 | **175 ms** | **−34 %** | yes, server-confirmed |
 | **Hybrid key exchange + hybrid device authentication** (ML-DSA-44 + ECDSA P-256) | **238 ms** | **−11 %** | yes, 100 % of rounds |
 | same with ML-DSA-65 instead of ML-DSA-44 | 379 ms | +42 % | yes, but misses target |
+| Hybrid key exchange with the ML-KEM NTTs on the **PowerQuad** accelerator (§5.2.1) | 217 ms (CPU-NTT arm of the same run: 179) | −18 % | yes, but +38 ms vs the CPU NTT |
 
 **Result: the primary goal — hybrid authentication and key establishment with no increase in
 end-to-end latency over the RSA baseline — is met on this board, in portable C, without
@@ -111,7 +112,8 @@ ML-DSA-44 signing ~77 ms on average.
   derive the same ML-KEM‖X25519 secret) and by the server's own `hybrid-pqc` report.
 * ML-KEM encaps/decaps self-test on-board: shared secrets match. ML-DSA/ECDSA self-verify: 0
   failures in all runs.
-* 0 failed rounds in 1 300 benchmarked connections across runs 1–13.
+* 0 failed rounds in 1 300 benchmarked connections across runs 1–13. The PowerQuad-NTT arm of
+  runs 14–16 failed 1 handshake in 25 (a wrong NTT); after the fix in run 18, 100/100 rounds ok.
 * Reproduce: `make setup` (fetches SDK + toolchain), `make patch-sdk`, `make flash
   APP_NAME=app_tls13`, `make monitor`. `EXAMPLE_TLS_MODE` selects the arms, `EXAMPLE_ITERATIONS`
   the rounds. The SDK is not vendored; our changes to it are one reviewable patch file.
@@ -196,18 +198,61 @@ Three measured/structural reasons it does not pay here:
 2. **Arithmetic and precision.** NTT arithmetic is modular (q = 3329 / 8 380 417). The Neutron NPU
    computes int8×int8→int32 for neural-network layers and has no modular reduction: 12-bit
    (ML-KEM) or 23-bit (ML-DSA) operands must be split into limbs → 4 (ML-KEM) to 9 (ML-DSA)
-   matrix products of 256×256 per transform, plus 256 reductions on the CPU. The PowerQuad's FFT
-   engine is float/fixed-point: an exact integer convolution of 12-bit values overflows float32's
-   24-bit mantissa, again forcing limb splitting. Its int32 matrix engine can do an exact
-   256×256 product for ML-KEM (barely: sums reach 2³²), with CPU reduction afterwards.
+   matrix products of 256×256 per transform, plus 256 reductions on the CPU. The PowerQuad's
+   matrix engine computes in float32 and, as measured below, clamps outputs to 16 bits, so the
+   operands must be split into limbs there too.
 3. **Data movement and invocation.** One software NTT is 132 µs. An NPU call goes through the
    TensorFlow-Lite-Micro runtime with a pre-compiled "model" — hundreds of µs to ms per call, i.e.
-   slower than the CPU doing the NTT. The PowerQuad is memory-mapped and cheap to invoke (µs), so a
-   ~2× gain per NTT is plausible but caps at ~1 ms per handshake.
+   slower than the CPU doing the NTT. The PowerQuad is memory-mapped and cheap to invoke, but its
+   operands are limited to 16×16.
+
+#### 5.2.1 The PowerQuad NTT, implemented and measured (runs 14–18)
+
+Because the organisers asked for ML-KEM on the accelerator, the NTT was ported to the PowerQuad
+matrix engine and run inside the live handshake (`app_pq_ntt.c`, benchmark arm `MLKEM(PQ-NTT)`,
+`EXAMPLE_TLS_MODE 10`):
+
+* FIPS 203 Algorithm 9 rewritten as two 128×128 matrix-vector products (even and odd coefficients
+  share the twiddle matrix W[i][j] = 17^((2·BitRev7(i)+1)·j) mod q, verified against the
+  reference by `tools/gen_pq_ntt_tables.py`).
+* W stored in flash as 8×8 tiles of 16×16 (the engine's maximum operand), split into 6-bit limbs;
+  coefficients split into three 5-bit limbs; 128 `PQ_MatrixMultiplication` calls per NTT; the CPU
+  accumulates the column tiles, recombines the limbs and reduces mod q.
+* Plugged into mlkem-native through its native-backend hook (`MLK_USE_NATIVE_NTT`), switchable
+  at runtime, so the same binary measures both paths in interleaved rounds.
+
+| Measured (DWT, 150 MHz) | CPU (portable C) | PowerQuad | Ratio |
+|---|---|---|---|
+| One 16×16 × 16×6 block product (1 536 MAC) | — | 2 790 cycles (1.81 cycles/MAC) | |
+| NTT of one polynomial | 19 834 cycles = 0.132 ms | 471 731 cycles = 3.14 ms | **23.8× slower** |
+| ML-KEM-768 keypair + decaps | 15.9 ms | 52.1 ms | 3.3× slower |
+| TLS 1.3 hybrid handshake, median of 25 interleaved rounds | 72 ms | 109 ms | **+37 ms** |
+| Full round (TCP + handshake + GET) | 179 ms | 217 ms | +38 ms |
+
+Correctness was the hard part. The first build (runs 14–16) produced a wrong coefficient about
+once in 15 000 and failed one hybrid handshake in 25 with a record-MAC error. Interrupt masking,
+memory barriers and a data-level completion wait changed nothing. A per-block verification build
+(run 17) caught the engine in the act: `engine 32767 vs cpu 34870`. **The matrix engine saturates
+every output at +32 767, the int16 maximum, even with the 32-bit output format selected**, and the
+SDK driver does not document it. Any 16-term dot product of two 6-bit limbs can exceed that
+(63·63·16 = 63 504), which is why only the rare large sums — concentrated in one twiddle row,
+hence the recurring coefficient 56 — went wrong. Splitting the coefficients into 5-bit limbs
+(16·63·31 = 31 248 < 32 768) fixed it: 40 000 random block products and 153 600 NTT coefficients
+verified with zero mismatches, 100/100 handshakes in run 18. The fix costs a further 1.5× in
+engine work (six B columns instead of four), which is why run 18 is slower than run 14's 14.8×.
+
+Why it cannot win, from the measurements: the engine offers dense products at 1.6–1.8 cycles per
+MAC, so a 256-point NTT costs ≈ 197 k MACs that way (two 128×128 products × 6 limb columns)
+against ≈ 2 k modular multiplications for the butterfly the Cortex-M33 runs; a four-step
+formulation (16-point and 8-point stages, ≈ 25 k MACs) would still need ≥ 40 k cycles before
+overheads, twice the software NTT. The engine's width (16×16) and output range (16-bit) are built
+for small DSP filters, not for a 12-bit modular transform.
 
 **Conclusion: on the MCXN947 the NPU is not a useful accelerator for ML-KEM/ML-DSA, and the
-PowerQuad's ceiling is ~1 % of end-to-end latency.** The hashing (Keccak, ~50 % of ML-KEM and a
-similar share of ML-DSA) is the real compute cost and there is no Keccak hardware on this part.
+PowerQuad NTT is a measured negative result: correct, but 23.8× slower per transform and +37 ms
+per hybrid handshake.** The deployment configuration keeps the NTT on the CPU. The hashing
+(Keccak, ~50 % of ML-KEM and a similar share of ML-DSA) is the real compute cost and there is no
+Keccak hardware on this part.
 
 ### 5.3 What *would* help, ranked by measured payoff
 
@@ -217,8 +262,8 @@ similar share of ML-DSA) is the real compute cost and there is no Keccak hardwar
 | **Optimised Keccak assembly** for Cortex-M (2–3× over portable C; mlkem-native/mldsa-native accept a custom FIPS-202 backend) | ≈ 4–5 ms (ML-KEM), ≈ 10–20 ms (ML-DSA sign) | medium | not done |
 | TLS 1.3, DRBG-once, TCP window (§4) | **−91 ms** | trivial | **done** |
 | ML-DSA-44 instead of ML-DSA-65 | −60…−100 ms signing | one define | **done** |
-| PowerQuad NTT | ≤ 1 ms | medium | not worth it |
-| NPU NTT | ≤ 0 (overhead ≥ gain) | high | negative result |
+| PowerQuad NTT (§5.2.1) | **measured: +37 ms per hybrid handshake**, NTT 23.8× slower than the CPU | medium | **done — negative result**, kept as a switchable benchmark arm |
+| NPU NTT | ≤ 0 (overhead ≥ gain); toolchain not in the public SDK | high | negative result (analysis) |
 
 ---
 
@@ -298,3 +343,7 @@ running in software!), consider Keccak assembly, ignore the NPU for lattice math
 | 11 | ML-DSA-44 instead | … / 289 ms (self-verify) | |
 | 12 | 5 arms incl. sign-only, degraded network | 292 vs 290 (TLS 1.2 same run) | relative only |
 | **13** | **5 arms, clean network** | **182 / 163 / 175 / 261 / 238 ms** | **headline** |
+| 14 | + NTT on the PowerQuad (4 arms), 6-bit limbs | 261 (PQ) / 241 (CPU NTT) ms | 1 handshake in 25 fails: rare wrong NTT |
+| 15–16 | barriers, interrupt masking, data-level completion wait | — | fault unchanged: not a timing hazard |
+| 17 | per-block verify build | — | root cause: engine clamps outputs at +32 767 |
+| 18 | 5-bit coefficient limbs (fix), 4 arms | 217 (PQ) / 179 (CPU NTT) / 163 / 181 ms | 100/100 ok; PowerQuad NTT 23.8× slower, +37 ms |

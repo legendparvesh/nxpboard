@@ -380,15 +380,14 @@ Handshake arms (median, ms): hybrid KEX with PowerQuad NTT **105** vs CPU NTT **
 full round **261 vs 241**. TLS 1.3 classic 64 / 212, TLS 1.2 176 / 245.
 
 Correctness (first build): 1 coefficient mismatch in 150 NTTs (38 400 coefficients) and one
-handshake of 25 failed with a record-MAC error — a rare wrong NTT. The arithmetic is exact by
-construction (every 16-term dot product < 2²⁴), so the suspect is a read of the result buffer
-racing the engine's final write; a DSB/ISB after `PQ_WaitDone` and a 2 000-block engine check
-were added (run 15).
+handshake of 25 failed with a record-MAC error — a rare wrong NTT. The arithmetic looked exact by
+construction (every 16-term dot product < 2²⁴, well inside float32), so runs 15–17 chased a
+timing hazard. The real cause turned out to be arithmetic after all — see run 17.
 
 ### Analysis
 
-* The PowerQuad can execute ML-KEM's NTT, but **14.8× slower than the CPU butterfly**, and the
-  hybrid handshake gets ~19 ms *slower*. Three measured reasons:
+* The PowerQuad can execute ML-KEM's NTT, but **14.8× slower than the CPU butterfly** in this
+  (faulty) 6-bit-limb form, and the hybrid handshake gets ~19 ms *slower*. Three measured reasons:
   1. **Complexity class:** the engine offers dense products only; a 256-point NTT is 131 k MACs
      that way, versus ~2 k multiplications for the O(n log n) butterfly the CPU runs.
   2. **16×16 operand limit:** 128 engine invocations per NTT; the 1.61 cycles/MAC already includes
@@ -403,6 +402,101 @@ were added (run 15).
   would need 4 (ML-KEM) to 9 (ML-DSA) limb products per transform plus per-invocation runtime
   overhead of hundreds of µs, versus 132 µs for the whole software NTT.
 
+## Run 15 — PowerQuad NTT, barrier after `PQ_WaitDone` + engine self-check, four arms, 100 rounds
+
+Same build as run 14 plus `DSB; ISB` after the busy-wait, a 2 000-block engine check and the
+correctness test run twice (interrupts enabled / tile loop in a critical section).
+
+```
+engine check: 2000 random 16x16x4 block products vs CPU, 0 mismatching -> PASS
+correctness (interrupts enabled): 600 NTTs, 153600 coefficients, 10 mismatches -> FAIL
+correctness (interrupts masked ): 600 NTTs, 153600 coefficients,  6 mismatches -> FAIL
+NTT, PowerQuad: 294456 cycles vs software 19834 -> SLOWER by 14.84x
+```
+
+Handshake medians: PQ-NTT 97 ms vs CPU NTT 75 ms; 1 of 25 PQ-NTT handshakes failed (`MAC failed`).
+Masking interrupts changes nothing → not an interrupt hazard. The failing coefficient is
+almost always **56** (output row 28 = tile row 1, local row 12), occasionally 86 or 102, and
+always an even-indexed coefficient — too regular for a random glitch.
+
+## Run 16 — PowerQuad NTT, sentinel-filled result buffer (completion wait on the data itself)
+
+Result buffer pre-filled with 0x7FFFFFFF before each block, CPU spins after BUSY clears until no
+sentinel remains, counting how often that wait was needed.
+
+```
+correctness (interrupts enabled): 6 mismatches -> FAIL
+correctness (interrupts masked ): 5 mismatches -> FAIL
+late result writes observed (BUSY clear before data landed): 0
+one block product: 2544 cycles (2.48 cycles/MAC, sentinel fill + scan included)
+NTT, PowerQuad: 408220 cycles -> SLOWER by 20.58x
+```
+
+→ BUSY never clears early. The output side of the engine is cleared; the hazard is not a
+race. Note the 2 000-block engine check is statistically useless at this fault rate: with
+≈ 1 wrong block in 10 000 it expects 0.2 faults.
+
+## Run 17 — PowerQuad NTT, per-block verify mode: **root cause found**
+
+Every block product of the NTT compared against a CPU reference, faults logged with the operands
+and a re-run; engine check raised to 40 000 blocks. The first four faults say it all:
+
+```
+block mismatch: tile 9 W_lo out[12][0] engine 32767 vs cpu 34870
+block mismatch: tile 9 W_lo out[12][0] engine 32767 vs cpu 34055
+block mismatch: tile 9 W_lo out[12][0] engine 32767 vs cpu 33676
+block mismatch: tile 9 W_lo out[12][0] engine 32767 vs cpu 33199
+```
+
+**The matrix engine clamps every output at +32767 (int16 maximum) even with `outputFormat =
+kPQ_32Bit` and a 32-bit result buffer.** A block output is a 16-term sum of products of two
+6-bit limbs, up to 63·63·16 = 63 504; sums above 32 767 are rare for random operands (≈ 1 in
+10 000 outputs), which is why only ~7·10⁻⁵ of coefficients went wrong. Tile 9, local row 12 is
+global output row 28 = coefficient 56: that twiddle row happens to carry large low limbs, hence
+the recurrence. Not documented in the SDK driver; the `PQ_SetConfig` output format is honoured
+for the width of the write but not for the saturation point. (The serial port dropped after
+these lines; the diagnostic build was then reverted.)
+
+## Run 18 — PowerQuad NTT **fixed**: 5-bit coefficient limbs, four arms, 100 rounds
+
+Coefficients split into three 5-bit limbs (x = 1024·x₂ + 32·x₁ + x₀) while the twiddles keep
+their two 6-bit limbs, so every block output ≤ 16·63·31 = 31 248 < 32 768. B is 128×6, still 128
+engine calls per NTT, tables unchanged. Commit 2ddcc8c. Network good (TCP connect medians
+20–23 ms).
+
+```
+engine check: 40000 random 16x16x6 block products vs CPU, 0 blocks / 0 outputs wrong -> PASS
+correctness: 200 random polyvecs (600 NTTs, 153600 coefficients), 0 mismatches -> PASS
+one 16x16 x 16x6 block product (1536 MAC)  :   2790 cycles  (1.81 cycles/MAC)
+NTT, software (Cortex-M33, portable C)     :  19834 cycles = 0.132 ms
+NTT, PowerQuad (128 tiled block products)  : 471731 cycles = 3.144 ms  -> SLOWER by 23.78x
+ML-KEM-768 keypair + decaps, NTT on CPU      : 1000264 + 1384916 cycles = 15.901 ms
+ML-KEM-768 keypair + decaps, NTT on PowerQuad: 3712139 + 4097193 cycles = 52.062 ms
+```
+
+| Arm | TCP connect | TLS handshake | HTTP GET | Full round | ok |
+|---|---|---|---|---|---|
+| MLKEM(PQ-NTT) | 22 | **109** | 83 | **217** | 25/25 |
+| TLS1.3+MLKEM (CPU NTT) | 20 | **72** | 82 | **179** | 25/25 |
+| TLS1.3 | 23 | 55 | 82 | 163 | 25/25 |
+| TLS1.2 | 22 | 133 | 22 | 181 | 25/25 |
+
+(medians, ms; 100/100 rounds ok, no MAC failures)
+
+### Analysis
+
+* **Correct now, and slower than before the fix:** the PowerQuad NTT costs 472 k cycles against
+  19.8 k on the CPU (**23.8× slower**); the hybrid handshake is **+37 ms** (109 vs 72 ms) and the
+  full round +38 ms (217 vs 179). ML-KEM keypair + decaps goes from 15.9 ms to 52.1 ms. The fix
+  itself cost 1.5× (6 instead of 4 B columns per block) on top of run 14's 14.8×.
+* The result is not an implementation accident but the engine's shape: dense 16×16 products at
+  1.6–1.8 cycles/MAC against an O(n log n) butterfly that needs ~2 k multiplications; limb splitting
+  for a 12-bit modular operand on a float32 datapath with a 16-bit output clamp; 128 invocations
+  per transform. Even a four-step NTT formulation (≈ 25 k MACs) would stay ≥ 2× slower than the
+  CPU on this engine.
+* Keep `MLKEM(PQ-NTT)` as the measured negative result; the deployment configuration runs the NTT
+  on the Cortex-M33 (`app_pq_ntt_enabled = 0`).
+
 ## Comparison (medians)
 
 ### Against the agreed baseline (TLS 1.2, seed per connection, clean network: **266 ms**)
@@ -416,6 +510,7 @@ were added (run 15).
 | **TLS 1.3 + X25519MLKEM768 + ML-DSA-44/ECDSA auth, sign only** (run 13) | 71 | 77 | **238** | **−28 ms (−11 %)** |
 | same, with self-verify (run 13) | 72 | 94 | 261 | −5 ms (−2 %) |
 | TLS 1.3 + X25519MLKEM768 + ML-DSA-**65**/ECDSA auth, with self-verify (run 10) | 77 | 155 | 379 | **+113 ms — target missed** |
+| TLS 1.3 + X25519MLKEM768, NTTs on the **PowerQuad** (run 18; CPU-NTT arm of the same run: 179) | 109 | – | 217 | −49 ms, but **+38 ms vs CPU NTT** — negative result |
 
 → **Hybrid post-quantum key establishment *and* hybrid authentication (ML-DSA-44 + ECDSA P-256,
 device signing) meet the "no increase in end-to-end latency" goal on the FRDM-MCXN947, without
