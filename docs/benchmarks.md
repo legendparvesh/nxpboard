@@ -196,6 +196,26 @@ Lesson learned: with the original 16 KB task stack the hybrid handshake *hung si
 Ranked acceleration plan: (1) lwIP window/pbuf tuning, (2) ELS/PKC for X25519 + ECDSA,
 (3) optimised Keccak assembly, (4) NPU/PowerQuad NTT — documented negative result.
 
+## Run 9 — lwIP receive window tuned, three arms, 100 rounds
+
+As run 7, plus in `app_tls13/freertos/prj.conf`: `TCP_WND` 2×MSS → **4×MSS** (2920 → 5840 B),
+`PBUF_POOL_SIZE` 5 → 8, `MEM_SIZE` 22 → 32 KB (+17 KB RAM). Motivation: the server's first
+flight in the hybrid handshake (~2.9 KB) exceeded the old window, forcing an extra ACK round trip.
+100/100 OK, clean network (TCP connect median 20–21 ms all arms). Round 1 JSON:
+`"handshake_method":"hybrid-pqc"`.
+
+| Phase (median, ms) | TLS 1.2 | TLS 1.3 classic | TLS 1.3 + X25519MLKEM768 |
+|---|---|---|---|
+| TCP connect (control) | 21 | 21 | 20 |
+| TLS handshake | 132 (was 156) | 55 (was 61) | **73 (was 102)** |
+| HTTP GET | 21 | 81 | 81 |
+| **Full round** | 174 (was 213) | 159 (was 181) | **175 (was 231)** |
+| Full round, min | 160 | 146 | 165 |
+
+The hybrid arm is now **+16 ms over TLS 1.3 classic — equal to the measured ML-KEM crypto
+cost (6.6 + 9.2 = 15.8 ms, run 8)**. The transport overhead of the extra 2.3 KB is gone.
+Lesson: the first PQC cost that hurt was not crypto but a TCP buffer sized for ~2 KB handshakes.
+
 ## Comparison (medians)
 
 ### Against the agreed baseline (TLS 1.2, seed per connection, clean network: **266 ms**)
@@ -203,13 +223,18 @@ Ranked acceleration plan: (1) lwIP window/pbuf tuning, (2) ELS/PKC for X25519 + 
 | Configuration | Handshake | Full round | Δ vs baseline |
 |---|---|---|---|
 | TLS 1.2, seed per connection (baseline, run 1) | 140 | 266 | — |
-| TLS 1.3 classic, seed once (run 7) | 61 | 181 | −85 ms (−32 %) |
-| **TLS 1.3 + X25519MLKEM768, seed once (run 7)** | 102 | **231** | **−35 ms (−13 %)** |
+| TLS 1.2, seed once + lwIP window (run 9) | 132 | 174 | −92 ms (−35 %) |
+| TLS 1.3 classic, seed once + lwIP window (run 9) | 55 | 159 | −107 ms (−40 %) |
+| **TLS 1.3 + X25519MLKEM768, seed once + lwIP window (run 9)** | 73 | **175** | **−91 ms (−34 %)** |
 
 → **Hybrid post-quantum key establishment meets the "no increase in end-to-end latency" goal
-on this board without any hardware acceleration.** The remaining budget (~35 ms) plus whatever
-acceleration recovers from the 41 ms ML-KEM cost is what hybrid *authentication* (ML-DSA) will
-have to fit into.
+on this board, by a wide margin, without any hardware acceleration.** The ~90 ms margin is the
+budget for hybrid *authentication* (ML-DSA verify + ~6 KB certificate).
+
+Where the margin came from (all "software support" items, none of them PQC maths):
+1. TLS 1.3 instead of TLS 1.2: one round trip fewer (≈ −30 ms on this link).
+2. DRBG seeded once instead of per connection: −74 ms of TRNG gathering.
+3. lwIP receive window ≥ server first flight: −29 ms on the hybrid arm.
 
 ### Earlier (pre-hybrid) comparison
 
