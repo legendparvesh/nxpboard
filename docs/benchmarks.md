@@ -337,20 +337,47 @@ identical code/keys; 20-round average 100 ms (= 4.2 attempts, matching the spec)
 max observed 200 ms (run 12) / 364 ms (ML-DSA-65, run 10). Deadline-driven designs must budget
 for the tail (p99 ≈ 10 attempts ≈ 250 ms for ML-DSA-44 in portable C), not the median.
 
+## Run 13 — **headline run**: five arms, ML-DSA-44, clean network, 100 rounds
+
+Same build as run 12 (`EXAMPLE_TLS_MODE=9`), 20 rounds per arm, interleaved. **TCP connect
+median 20 ms in all five arms** → directly comparable to the 266 ms baseline. 100/100 OK,
+40/40 signed requests accepted by the server (200 / `hybrid-pqc`), 0 self-verify failures.
+
+| Phase (median, ms) | TLS 1.2 | TLS 1.3 | +ML-KEM | +ML-KEM +auth (sign + self-verify) | **+ML-KEM +auth (sign only)** |
+|---|---|---|---|---|---|
+| TCP connect (control) | 20 | 20 | 20 | 20 | 20 |
+| TLS handshake | 134 | 55 | 72 | 72 | 71 |
+| Hybrid auth | – | – | – | 94 (min 74, max 312) | **77** (min 38, max 202) |
+| HTTP GET | 21 | 82 | 81 | 41 | 46 |
+| **Full round** | 182 | 163 | 175 | **261** | **238** |
+| Full round min / max | 169 / 554 | 150 / 547 | 164 / 344 | 205 / 548 | 169 / 586 |
+| Request bytes tx | 452 | 428 | 1614 | 4958 | 4958 |
+
+Per-round averages, both auth arms: ML-DSA-44 sign ≈ 77 ms, ECDSA P-256 sign 11.4 ms
+(+ self-verify arm: ML-DSA verify 15.3, ECDSA verify 20.3 ms).
+
 ## Comparison (medians)
 
 ### Against the agreed baseline (TLS 1.2, seed per connection, clean network: **266 ms**)
 
-| Configuration | Handshake | Full round | Δ vs baseline |
-|---|---|---|---|
-| TLS 1.2, seed per connection (baseline, run 1) | 140 | 266 | — |
-| TLS 1.2, seed once + lwIP window (run 9) | 132 | 174 | −92 ms (−35 %) |
-| TLS 1.3 classic, seed once + lwIP window (run 9) | 55 | 159 | −107 ms (−40 %) |
-| **TLS 1.3 + X25519MLKEM768, seed once + lwIP window (run 9)** | 73 | **175** | **−91 ms (−34 %)** |
+| Configuration | Handshake | Auth | Full round | Δ vs baseline |
+|---|---|---|---|---|
+| TLS 1.2, seed per connection (**baseline**, run 1) | 140 | – | 266 | — |
+| TLS 1.2, seed once + lwIP window (run 13) | 134 | – | 182 | −84 ms (−32 %) |
+| TLS 1.3 classic, seed once + lwIP window (run 13) | 55 | – | 163 | −103 ms (−39 %) |
+| **TLS 1.3 + X25519MLKEM768** (run 13) | 72 | – | **175** | **−91 ms (−34 %)** |
+| **TLS 1.3 + X25519MLKEM768 + ML-DSA-44/ECDSA auth, sign only** (run 13) | 71 | 77 | **238** | **−28 ms (−11 %)** |
+| same, with self-verify (run 13) | 72 | 94 | 261 | −5 ms (−2 %) |
+| TLS 1.3 + X25519MLKEM768 + ML-DSA-**65**/ECDSA auth, with self-verify (run 10) | 77 | 155 | 379 | **+113 ms — target missed** |
 
-→ **Hybrid post-quantum key establishment meets the "no increase in end-to-end latency" goal
-on this board, by a wide margin, without any hardware acceleration.** The ~90 ms margin is the
-budget for hybrid *authentication* (ML-DSA verify + ~6 KB certificate).
+→ **Hybrid post-quantum key establishment *and* hybrid authentication (ML-DSA-44 + ECDSA P-256,
+device signing) meet the "no increase in end-to-end latency" goal on the FRDM-MCXN947, without
+hardware acceleration of any PQC operation.** ML-DSA-65 does not fit in portable C.
+
+Caveats to state alongside: ML-DSA signing latency is a geometric distribution (budget for the
+tail); ECDSA runs in software (ELS/PKC would remove ~10 ms from signing, ~30 ms from
+sign+verify); the server certificate is not verified in any arm (`MBEDTLS_SSL_VERIFY_NONE`, as
+in the original firmware); the signature is NIST category 2 while the KEM is category 3.
 
 Where the margin came from (all "software support" items, none of them PQC maths):
 1. TLS 1.3 instead of TLS 1.2: one round trip fewer (≈ −30 ms on this link).
