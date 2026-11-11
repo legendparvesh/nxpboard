@@ -17,7 +17,17 @@
 #define Q 3329
 #define TILE 16
 #define NT 8 /* 128 / 16 tiles per dimension */
-#define BCOLS 4
+
+/* Limb split. The twiddles W are 6-bit limbs (W = 64*hi + lo, hi <= 52), the
+ * coefficients x are 5-bit limbs (x = 1024*x2 + 32*x1 + x0, x2 <= 3).
+ *
+ * Why 5-bit and not 6-bit for x: the matrix engine clamps every output at
+ * +32767 even with the output format set to 32-bit (run 16 caught it:
+ * "engine 32767 vs cpu 34870"). A block output is a 16-term sum of limb
+ * products, so the limbs must satisfy 16 * max(W limb) * max(x limb) < 32768:
+ * 16 * 63 * 31 = 31248 fits, 16 * 63 * 63 = 63504 does not. With 6-bit x limbs
+ * ~1 in 10 000 coefficients came out wrong (runs 14/15). */
+#define BCOLS 6 /* even x0,x1,x2 | odd x0,x1,x2 */
 
 extern const int16_t app_pq_w_lo[NT * NT * TILE * TILE];
 extern const int16_t app_pq_w_hi[NT * NT * TILE * TILE];
@@ -25,7 +35,7 @@ extern const int16_t app_pq_w_hi[NT * NT * TILE * TILE];
 volatile int app_pq_ntt_enabled = 0;
 
 /* Operands must be in RAM and word-aligned for the engine. */
-static int16_t s_b[128][BCOLS] __attribute__((aligned(4)));      /* even_lo, even_hi, odd_lo, odd_hi */
+static int16_t s_b[128][BCOLS] __attribute__((aligned(4)));      /* coefficient limbs, see BCOLS */
 static int32_t s_tmp[TILE][BCOLS] __attribute__((aligned(4)));   /* one block product */
 static int32_t s_acc_lo[128][BCOLS] __attribute__((aligned(4))); /* W_lo * B */
 static int32_t s_acc_hi[128][BCOLS] __attribute__((aligned(4))); /* W_hi * B */
@@ -45,7 +55,7 @@ void app_pq_ntt_init(void)
     PQ_SetConfig(POWERQUAD, &cfg);
 }
 
-/* One 16x16 (tile of W) times 16x4 (block of B) product, result into s_tmp. */
+/* One 16x16 (tile of W) times 16x6 (block of B) product, result into s_tmp. */
 static inline void pq_block(const int16_t *w_tile, const int16_t *b_block)
 {
     PQ_MatrixMultiplication(POWERQUAD, POWERQUAD_MAKE_MATRIX_LEN(TILE, TILE, BCOLS), (void *)w_tile, (void *)b_block,
@@ -71,16 +81,18 @@ static void cpu_block(const int16_t *w_tile, const int16_t *b_block, int32_t out
 
 void app_pq_ntt(int16_t p[256])
 {
-    /* 1. Split input into [0,q) and 6-bit limbs, even/odd interleaved -> B (128x4). */
+    /* 1. Split input into [0,q) and 5-bit limbs, even/odd interleaved -> B (128x6). */
     for (int j = 0; j < 128; j++)
     {
         int16_t e = p[2 * j], o = p[2 * j + 1];
         if (e < 0) e += Q;
         if (o < 0) o += Q;
-        s_b[j][0] = (int16_t)(e & 63);
-        s_b[j][1] = (int16_t)(e >> 6);
-        s_b[j][2] = (int16_t)(o & 63);
-        s_b[j][3] = (int16_t)(o >> 6);
+        s_b[j][0] = (int16_t)(e & 31);
+        s_b[j][1] = (int16_t)((e >> 5) & 31);
+        s_b[j][2] = (int16_t)(e >> 10);
+        s_b[j][3] = (int16_t)(o & 31);
+        s_b[j][4] = (int16_t)((o >> 5) & 31);
+        s_b[j][5] = (int16_t)(o >> 10);
     }
 
     /* 2. Tiled products: for each row tile, accumulate the 8 column tiles. */
@@ -103,11 +115,14 @@ void app_pq_ntt(int16_t p[256])
         }
     }
 
-    /* 3. Recombine limbs: W*x = Wlo*xlo + 64*(Wlo*xhi + Whi*xlo) + 4096*Whi*xhi, then mod q. */
+    /* 3. Recombine limbs: W*x = (64*Whi + Wlo) * (x0 + 32*x1 + 1024*x2), then mod q.
+     * Each accumulator column is a sum over 128 terms < 128 * 3329^2 < 2^31. */
     for (int i = 0; i < 128; i++)
     {
-        int32_t even = s_acc_lo[i][0] + 64 * (s_acc_lo[i][1] + s_acc_hi[i][0]) + 4096 * s_acc_hi[i][1];
-        int32_t odd  = s_acc_lo[i][2] + 64 * (s_acc_lo[i][3] + s_acc_hi[i][2]) + 4096 * s_acc_hi[i][3];
+        int32_t even = (s_acc_lo[i][0] + 32 * s_acc_lo[i][1] + 1024 * s_acc_lo[i][2]) +
+                       64 * (s_acc_hi[i][0] + 32 * s_acc_hi[i][1] + 1024 * s_acc_hi[i][2]);
+        int32_t odd  = (s_acc_lo[i][3] + 32 * s_acc_lo[i][4] + 1024 * s_acc_lo[i][5]) +
+                       64 * (s_acc_hi[i][3] + 32 * s_acc_hi[i][4] + 1024 * s_acc_hi[i][5]);
         p[2 * i]     = (int16_t)(even % Q);
         p[2 * i + 1] = (int16_t)(odd % Q);
     }
@@ -145,34 +160,40 @@ void app_pq_ntt_bench(void)
 
     PRINTF("-- ML-KEM NTT on the PowerQuad matrix engine --\r\n");
 
-    /* Engine arithmetic check: 2000 random block products vs CPU (exactness + result-write race). */
+    /* Engine arithmetic check: random block products (5-bit x limbs, lo and hi
+     * W tiles) vs CPU. The clamp fault of runs 14/15 hit ~1 in 10 000 blocks,
+     * so the sample has to be tens of thousands of blocks to be meaningful. */
     {
         int32_t ref[TILE][BCOLS];
-        int bad_blocks = 0;
-        for (int t = 0; t < 2000; t++)
+        int bad_blocks = 0, bad_outputs = 0;
+        const int blocks = 40000;
+        for (int t = 0; t < blocks; t++)
         {
-            uint8_t rnd[128 * BCOLS * 2];
+            uint8_t rnd[128 * BCOLS];
             psa_generate_random(rnd, sizeof(rnd));
-            for (int k = 0; k < 128 * BCOLS; k++) ((int16_t *)s_b)[k] = (int16_t)(rnd[2 * k] & 63);
-            const int tile = (rnd[0] % (NT * NT)) * TILE * TILE;
-            const int16_t *b_block = &s_b[(rnd[1] % NT) * TILE][0];
-            pq_block(&app_pq_w_hi[tile], b_block);
-            cpu_block(&app_pq_w_hi[tile], b_block, ref);
+            for (int k = 0; k < 128 * BCOLS; k++) ((int16_t *)s_b)[k] = (int16_t)(rnd[k] & 31);
+            const int tile          = (rnd[0] % (NT * NT)) * TILE * TILE;
+            const int16_t *w_tile   = (rnd[2] & 1) ? &app_pq_w_hi[tile] : &app_pq_w_lo[tile];
+            const int16_t *b_block  = &s_b[(rnd[1] % NT) * TILE][0];
+            pq_block(w_tile, b_block);
+            cpu_block(w_tile, b_block, ref);
             if (memcmp(ref, s_tmp, sizeof(ref)) != 0)
             {
-                if (bad_blocks < 3)
-                {
-                    for (int i = 0; i < TILE; i++)
-                        for (int c = 0; c < BCOLS; c++)
-                            if (ref[i][c] != s_tmp[i][c])
-                                PRINTF("    block mismatch: out[%d][%d] engine %ld vs cpu %ld\r\n", i, c,
-                                       (long)s_tmp[i][c], (long)ref[i][c]);
-                }
+                for (int i = 0; i < TILE; i++)
+                    for (int c = 0; c < BCOLS; c++)
+                        if (ref[i][c] != s_tmp[i][c])
+                        {
+                            if (bad_outputs < 4)
+                                PRINTF("    block mismatch: tile %d W_%s out[%d][%d] engine %ld vs cpu %ld\r\n",
+                                       tile / (TILE * TILE), (rnd[2] & 1) ? "hi" : "lo", i, c, (long)s_tmp[i][c],
+                                       (long)ref[i][c]);
+                            bad_outputs++;
+                        }
                 bad_blocks++;
             }
         }
-        PRINTF("  engine check: 2000 random 16x16x4 block products vs CPU, %d mismatching -> %s\r\n", bad_blocks,
-               bad_blocks == 0 ? "PASS" : "FAIL");
+        PRINTF("  engine check: %d random 16x16x%d block products vs CPU, %d blocks / %d outputs wrong -> %s\r\n",
+               blocks, BCOLS, bad_blocks, bad_outputs, bad_blocks == 0 ? "PASS" : "FAIL");
     }
 
     /* Correctness: PowerQuad NTT == software NTT (mod q) on random polynomials. */
@@ -204,7 +225,7 @@ void app_pq_ntt_bench(void)
     PRINTF("  correctness: %d random polyvecs (%d NTTs, %d coefficients), %d mismatches -> %s\r\n", trials, trials * 3,
            trials * 3 * 256, bad, bad == 0 ? "PASS" : "FAIL");
 
-    /* Raw engine cost: one 16x16 * 16x4 block product incl. wait. */
+    /* Raw engine cost: one 16x16 * 16x6 block product incl. wait. */
     {
         uint32_t best = UINT32_MAX;
         for (int r = 0; r < 20; r++)
@@ -214,8 +235,9 @@ void app_pq_ntt_bench(void)
             uint32_t dt = dwt_now() - t0;
             if (dt < best) best = dt;
         }
-        PRINTF("  one 16x16 x 16x4 block product (1024 MAC)  : %6lu cycles  (%lu.%02lu cycles/MAC)\r\n",
-               (unsigned long)best, (unsigned long)(best / 1024), (unsigned long)((best * 100 / 1024) % 100));
+        const unsigned long macs = TILE * TILE * BCOLS;
+        PRINTF("  one 16x16 x 16x%d block product (%lu MAC)  : %6lu cycles  (%lu.%02lu cycles/MAC)\r\n", BCOLS, macs,
+               (unsigned long)best, (unsigned long)(best / macs), (unsigned long)((best * 100 / macs) % 100));
     }
 
     /* NTT of one polynomial: software vs PowerQuad (min of 20). */

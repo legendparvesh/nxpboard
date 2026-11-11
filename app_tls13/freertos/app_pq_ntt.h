@@ -4,12 +4,14 @@
  * The ML-KEM NTT (FIPS 203 Alg. 9) is two 128x128 matrix-vector products with
  * the twiddle matrix W[i][j] = 17^((2*BitRev7(i)+1)*j) mod q (even and odd
  * coefficients share W). The PowerQuad matrix engine multiplies operands of at
- * most 16x16 and computes in float32 internally, so:
- *   - W and the input are split into 6-bit limbs (x = hi*64 + lo) so that every
- *     16-term dot product (<= 63*63*16) is exact in float32;
+ * most 16x16, computes in float32 internally and clamps every output at
+ * +32767 (measured, even with a 32-bit output format), so:
+ *   - W is split into 6-bit limbs (W = hi*64 + lo) and the input into 5-bit
+ *     limbs (x = 1024*x2 + 32*x1 + x0) so that every 16-term dot product
+ *     (<= 63*31*16 = 31248) stays below the clamp;
  *   - W is stored tile-major as 8x8 tiles of 16x16 (app_pq_ntt_tables.c);
- *   - the engine computes one 16x16 * 16x4 block product per call
- *     (B columns: even_lo, even_hi, odd_lo, odd_hi), the CPU accumulates the
+ *   - the engine computes one 16x16 * 16x6 block product per call
+ *     (B columns: even x0,x1,x2, odd x0,x1,x2), the CPU accumulates the
  *     8 column tiles, recombines the limbs and reduces mod q.
  * Plugged into mlkem-native through MLK_USE_NATIVE_NTT (app_pq_ntt_backend.h),
  * so the real TLS handshake runs its NTTs on the accelerator when
