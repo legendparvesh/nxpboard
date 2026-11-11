@@ -1,0 +1,13 @@
+# Generated / downloaded by `make setup` — not source
+/sdk/
+/toolchain/
+/.venv/
+# Build outputs
+/build/
+*.elf
+*.bin
+*.map
+# Editor / OS noise
+*.swp
+.DS_Store
+__pycache__/
