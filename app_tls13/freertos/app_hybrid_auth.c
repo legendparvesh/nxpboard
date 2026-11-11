@@ -150,7 +150,7 @@ int app_hybrid_auth_init(void)
 /* Sign + self-verify                                                        */
 /* ------------------------------------------------------------------------- */
 int app_hybrid_auth_sign_verify(const uint8_t *msg, size_t msg_len, app_hybrid_auth_result_t *res,
-                                char *hdr, size_t hdr_cap)
+                                char *hdr, size_t hdr_cap, int self_verify)
 {
     if (!s_ready)
     {
@@ -172,10 +172,17 @@ int app_hybrid_auth_sign_verify(const uint8_t *msg, size_t msg_len, app_hybrid_a
     }
     res->mldsa_sig_len = MLD_SIG_BYTES;
 
-    t0                   = dwt_now();
-    rc                   = mldsa_verify(s_mldsa_sig, msg, msg_len, NULL, 0, s_mldsa_pk);
-    res->mldsa_verify_us = cyc_to_us(dwt_now() - t0);
-    res->mldsa_ok        = (rc == 0);
+    if (self_verify)
+    {
+        t0                   = dwt_now();
+        rc                   = mldsa_verify(s_mldsa_sig, msg, msg_len, NULL, 0, s_mldsa_pk);
+        res->mldsa_verify_us = cyc_to_us(dwt_now() - t0);
+        res->mldsa_ok        = (rc == 0);
+    }
+    else
+    {
+        res->mldsa_ok = 1; /* deployment mode: the peer verifies */
+    }
 
     /* --- ECDSA P-256 over SHA-256(msg) --- */
     uint8_t h[32];
@@ -195,10 +202,17 @@ int app_hybrid_auth_sign_verify(const uint8_t *msg, size_t msg_len, app_hybrid_a
     }
     res->ecdsa_sig_len = (uint32_t)slen;
 
-    t0                   = dwt_now();
-    status               = psa_verify_hash(s_ecdsa_key, PSA_ALG_ECDSA(PSA_ALG_SHA_256), h, 32, ecdsa_sig, slen);
-    res->ecdsa_verify_us = cyc_to_us(dwt_now() - t0);
-    res->ecdsa_ok        = (status == PSA_SUCCESS);
+    if (self_verify)
+    {
+        t0                   = dwt_now();
+        status               = psa_verify_hash(s_ecdsa_key, PSA_ALG_ECDSA(PSA_ALG_SHA_256), h, 32, ecdsa_sig, slen);
+        res->ecdsa_verify_us = cyc_to_us(dwt_now() - t0);
+        res->ecdsa_ok        = (status == PSA_SUCCESS);
+    }
+    else
+    {
+        res->ecdsa_ok = 1;
+    }
 
     /* --- Header value: mldsa65=<b64>;ecdsa-p256=<b64> --- */
     size_t pos = 0, olen = 0;

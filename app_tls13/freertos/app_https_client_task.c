@@ -38,10 +38,11 @@ typedef struct
     const char *label; /* printed per round and in the summary */
     int tls_version;   /* 2 or 3 */
     int hybrid_kex;    /* 1 = offer X25519MLKEM768 first */
-    int hybrid_auth;   /* 1 = sign the TLS exporter with ML-DSA + ECDSA and send it */
+    int hybrid_auth;   /* 1 = sign the TLS exporter with ML-DSA + ECDSA, self-verify, send it;
+                        * 2 = sign and send only (deployment mode: the peer verifies) */
 } bench_arm_t;
 
-#define MAX_ARMS 4
+#define MAX_ARMS 5
 
 /* Label for the TLS exporter the device signs (any fixed ASCII string works;
  * both ends must agree if the server ever verifies). */
@@ -86,6 +87,7 @@ static uint32_t build_arms(uint32_t tls_mode, bench_arm_t *arms)
     const bench_arm_t tls13  = {"TLS1.3         ", 3, 0, 0};
     const bench_arm_t hybrid = {"TLS1.3+MLKEM   ", 3, 1, 0};
     const bench_arm_t auth   = {"MLKEM+MLDSAauth", 3, 1, 1};
+    const bench_arm_t authso = {"MLKEM+MLDSAsign", 3, 1, 2}; /* sign only, no self-verify */
     uint32_t n = 0;
 
     switch (tls_mode)
@@ -97,6 +99,7 @@ static uint32_t build_arms(uint32_t tls_mode, bench_arm_t *arms)
         case 6: arms[n++] = hybrid; arms[n++] = tls13; arms[n++] = tls12; break;
         case 7: arms[n++] = auth; arms[n++] = hybrid; arms[n++] = tls13; arms[n++] = tls12; break;
         case 8: arms[n++] = auth; break;
+        case 9: arms[n++] = authso; arms[n++] = auth; arms[n++] = hybrid; arms[n++] = tls13; arms[n++] = tls12; break;
         case 0:
         default: arms[n++] = tls13; arms[n++] = tls12; break;
     }
@@ -219,7 +222,8 @@ static void client_task(void *args)
                                 : -1;
             if (rc == 0)
             {
-                auth_hdr_len = app_hybrid_auth_sign_verify(exporter, sizeof(exporter), &auth, auth_hdr, 5120);
+                auth_hdr_len = app_hybrid_auth_sign_verify(exporter, sizeof(exporter), &auth, auth_hdr, 5120,
+                                                           arm->hybrid_auth == 1);
             }
             auth_round_ms = (uint32_t)(xTaskGetTickCount() - t_auth0) * (uint32_t)portTICK_PERIOD_MS;
             if (rc != 0 || auth_hdr_len <= 0 || !auth.mldsa_ok || !auth.ecdsa_ok)

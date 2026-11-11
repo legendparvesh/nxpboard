@@ -311,6 +311,32 @@ Authentication micro-benchmark, ML-DSA-44 vs ML-DSA-65 (DWT, 10 runs, ms):
 * Parameter-set choice is the decisive lever for authentication on this class of device:
   ML-DSA-65 in portable C is ~2.5× the cost of ML-DSA-44 and misses the target by ~110 ms.
 
+## Run 12 — five arms incl. **deployment-mode auth (sign only)**, ML-DSA-44, 100 rounds — network degraded
+
+`EXAMPLE_TLS_MODE=9`: `MLKEM+MLDSAsign` (sign, no self-verify) / `MLKEM+MLDSAauth` (sign +
+self-verify) / `TLS1.3+MLKEM` / `TLS1.3` / `TLS1.2`, 20 rounds each. 100/100 OK.
+**Network poor throughout: TCP connect medians 32–43 ms (vs 20–23 in runs 9/11)**, so absolute
+values are not comparable to the 266 ms baseline; within-run comparison remains valid.
+
+| Phase (median, ms) | TLS 1.2 | TLS 1.3 | +ML-KEM | +ML-KEM +auth (sign+verify) | +ML-KEM +auth (**sign only**) |
+|---|---|---|---|---|---|
+| TCP connect (control) | 33 | 43 | 38 | 32 | 42 |
+| TLS handshake | 188 | 80 | 104 | 84 | 87 |
+| Hybrid auth | – | – | – | 118 | **77** |
+| HTTP GET | 41 | 133 | 118 | 78 | 79 |
+| **Full round** | 290 | 343 | 275 | 356 | **292** |
+
+Within this run: **deployment-mode hybrid authentication (ML-DSA-44 + ECDSA, sign only) costs
+the same as the TLS 1.2 arm (292 vs 290 ms) and +17 ms over hybrid KEX alone.** To be
+repeated on a clean network for an absolute number against 266 ms.
+
+ML-DSA signing latency is a distribution: per-attempt cost is fixed (ML-DSA-44: 23.7 ms) but the
+rejection-sampling attempt count is geometric (FIPS 204 expected ≈ 4.25 attempts for ML-DSA-44,
+≈ 5.1 for ML-DSA-65). Measured: micro-benchmark medians 44 ms (run 11) vs 118 ms (run 12) with
+identical code/keys; 20-round average 100 ms (= 4.2 attempts, matching the spec); min 23.7,
+max observed 200 ms (run 12) / 364 ms (ML-DSA-65, run 10). Deadline-driven designs must budget
+for the tail (p99 ≈ 10 attempts ≈ 250 ms for ML-DSA-44 in portable C), not the median.
+
 ## Comparison (medians)
 
 ### Against the agreed baseline (TLS 1.2, seed per connection, clean network: **266 ms**)

@@ -28,11 +28,12 @@ typedef struct
 /* Generate the device key pairs (once). Prints key-generation times. 0 on success. */
 int app_hybrid_auth_init(void);
 
-/* Sign `msg` with ML-DSA-65 and ECDSA P-256, verify both, and write the header
- * value "mldsa65=<base64>;ecdsa-p256=<base64>" into hdr (NUL-terminated).
+/* Sign `msg` with ML-DSA and ECDSA P-256; if self_verify != 0 also verify both
+ * (demo mode: no external verifier). Writes the header value
+ * "mldsa<level>=<base64>;ecdsa-p256=<base64>" into hdr (NUL-terminated).
  * Returns the header value length, or a negative error. */
 int app_hybrid_auth_sign_verify(const uint8_t *msg, size_t msg_len, app_hybrid_auth_result_t *res,
-                                char *hdr, size_t hdr_cap);
+                                char *hdr, size_t hdr_cap, int self_verify);
 
 /* Micro-benchmark: ML-DSA-65 keypair/sign/verify (min/median/max) and the
  * RSA-2048 "today" reference (mbedTLS test key). */

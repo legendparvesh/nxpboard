@@ -81,7 +81,7 @@
 /*! @brief Benchmark arms, interleaved round by round (see app_https_client_task.h):
  *  0 = TLS1.3 vs TLS1.2, 2 = TLS1.2, 3 = TLS1.3, 4 = hybrid vs TLS1.3,
  *  5 = hybrid only, 6 = hybrid vs TLS1.3 vs TLS1.2 (three arms). */
-#define EXAMPLE_TLS_MODE 7
+#define EXAMPLE_TLS_MODE 9
 #endif /* EXAMPLE_TLS_MODE */
 
 #ifndef EXAMPLE_MAX_REQUEST_LENGTH
