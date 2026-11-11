@@ -7,8 +7,8 @@
 #ifndef APP_MLDSA_CONFIG_H
 #define APP_MLDSA_CONFIG_H
 
-/* ML-DSA-65: matches the server's RSA-3072 / AES-128 security level (NIST cat. 3). */
-#define MLD_CONFIG_PARAMETER_SET 65
+/* 65 = NIST cat. 3 (matches RSA-3072 / AES-128); 44 = cat. 2, ~2x faster signing, 2420 B sig. */
+#define MLD_CONFIG_PARAMETER_SET 44
 
 /* Symbols become mldsa_keypair_internal, mldsa_signature_internal, mldsa_verify, ... */
 #define MLD_CONFIG_NAMESPACE_PREFIX mldsa

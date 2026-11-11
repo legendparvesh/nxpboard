@@ -38,7 +38,7 @@ typedef struct
     const char *label; /* printed per round and in the summary */
     int tls_version;   /* 2 or 3 */
     int hybrid_kex;    /* 1 = offer X25519MLKEM768 first */
-    int hybrid_auth;   /* 1 = sign the TLS exporter with ML-DSA-65 + ECDSA and send it */
+    int hybrid_auth;   /* 1 = sign the TLS exporter with ML-DSA + ECDSA and send it */
 } bench_arm_t;
 
 #define MAX_ARMS 4
@@ -231,7 +231,7 @@ static void client_task(void *args)
             }
             if (verbose)
             {
-                PRINTF("hybrid auth: ML-DSA-65 sign %lu.%03lu ms, verify %lu.%03lu ms | ECDSA P-256 sign %lu.%03lu ms, "
+                PRINTF("hybrid auth: ML-DSA sign %lu.%03lu ms, verify %lu.%03lu ms | ECDSA P-256 sign %lu.%03lu ms, "
                        "verify %lu.%03lu ms | header %d chars | self-verify %s\r\n",
                        (unsigned long)(auth.mldsa_sign_us / 1000), (unsigned long)(auth.mldsa_sign_us % 1000),
                        (unsigned long)(auth.mldsa_verify_us / 1000), (unsigned long)(auth.mldsa_verify_us % 1000),
@@ -380,7 +380,7 @@ static void client_task(void *args)
                (unsigned long)(rx_sum[a] / n));
         if (arms[a].hybrid_auth)
         {
-            PRINTF("Auth (avg)    : ML-DSA-65 sign %lu.%lu ms, verify %lu.%lu ms | ECDSA sign %lu.%lu ms, verify %lu.%lu ms | self-verify failures %lu\r\n",
+            PRINTF("Auth (avg)    : ML-DSA sign %lu.%lu ms, verify %lu.%lu ms | ECDSA sign %lu.%lu ms, verify %lu.%lu ms | self-verify failures %lu\r\n",
                    (unsigned long)(mldsa_sign_us[a] / n / 1000), (unsigned long)(mldsa_sign_us[a] / n % 1000 / 100),
                    (unsigned long)(mldsa_verify_us[a] / n / 1000), (unsigned long)(mldsa_verify_us[a] / n % 1000 / 100),
                    (unsigned long)(ecdsa_sign_us[a] / n / 1000), (unsigned long)(ecdsa_sign_us[a] / n % 1000 / 100),

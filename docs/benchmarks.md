@@ -274,6 +274,43 @@ arrive during the ~155 ms of signing and are already buffered when the GET reads
 * Memory: ML-DSA-65 signing needs ~68 KB working memory (heap-backed; task stack would not do);
   flash 463 → 489 KB (+26 KB); heap raised to 192 KB.
 
+## Run 11 — step 4 with **ML-DSA-44** instead of ML-DSA-65, four arms, 100 rounds
+
+Same as run 10 with `MLD_CONFIG_PARAMETER_SET 44` (NIST category 2; pk 1312 B, sk 2560 B,
+signature 2420 B). Clean network (TCP connect median 20–23 ms, all arms). 100/100 OK,
+0 self-verify failures, server 200 / `hybrid-pqc` for every signed request (header 3336 chars).
+
+| Phase (median, ms) | TLS 1.2 | TLS 1.3 | TLS 1.3 + ML-KEM | TLS 1.3 + ML-KEM + hybrid auth (ML-DSA-44) |
+|---|---|---|---|---|
+| TCP connect (control) | 20 | 21 | 21 | 23 |
+| TLS handshake | 134 | 56 | 73 | 73 |
+| Hybrid auth (sign + self-verify) | – | – | – | **112** (min 73, max 304) |
+| HTTP GET | 21 | 82 | 84 | 47 |
+| **Full round** | 181 | 162 | 179 | **289** |
+| Request bytes tx | 452 | 428 | 1614 | **4958** |
+
+Per-round averages in the auth arm: ML-DSA-44 sign 80 ms, verify 15.2 ms, ECDSA sign 11.4 ms,
+verify 20.3 ms.
+
+Authentication micro-benchmark, ML-DSA-44 vs ML-DSA-65 (DWT, 10 runs, ms):
+
+| Operation | ML-DSA-44 min / med / max | ML-DSA-65 min / med / max |
+|---|---|---|
+| keypair | 14.3 / 14.7 / 14.8 | 25.4 / 25.4 / 25.4 |
+| **sign (32 B)** | **23.7 / 44.3 / 99.1** | 36.5 / 115.3 / 363.6 |
+| verify | 15.3 / 15.3 / 15.3 | 25.5 / 25.5 / 25.6 |
+| signature size | 2420 B | 3309 B |
+
+### Findings
+
+* **ML-DSA-44: 289 ms vs 266 ms baseline → +23 ms, target narrowly missed *with self-verify*.**
+  The self-verify (15.2 + 20.3 = 35.5 ms) is a demo artifact (no verifier available); the
+  deployment case (sign only) is ≈ 253 ms, **under the baseline** — to be measured directly
+  (run 12). With ELS/PKC hardware ECDSA signing (11 → ~2 ms) ≈ 244 ms.
+* Per-attempt cost of ML-DSA-44 signing ≈ 24 ms; median 2 attempts, worst seen 4.
+* Parameter-set choice is the decisive lever for authentication on this class of device:
+  ML-DSA-65 in portable C is ~2.5× the cost of ML-DSA-44 and misses the target by ~110 ms.
+
 ## Comparison (medians)
 
 ### Against the agreed baseline (TLS 1.2, seed per connection, clean network: **266 ms**)

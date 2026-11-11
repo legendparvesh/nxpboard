@@ -1,5 +1,5 @@
 /*
- * FOCAL hackathon - step 4: hybrid authentication (ML-DSA-65 + ECDSA P-256).
+ * FOCAL hackathon - step 4: hybrid authentication (ML-DSA + ECDSA P-256).
  * See app_hybrid_auth.h.
  */
 
@@ -20,6 +20,15 @@
 
 #include "mldsa_native.h"
 #include "app_hybrid_auth.h"
+
+/* Sizes and names follow the parameter set chosen in app_mldsa_config.h. */
+#define MLD_STR_(x) #x
+#define MLD_STR(x) MLD_STR_(x)
+#define MLD_LEVEL_STR MLD_STR(MLD_CONFIG_PARAMETER_SET)
+#define MLD_NAME "ML-DSA-" MLD_LEVEL_STR
+#define MLD_PK_BYTES MLDSA_PUBLICKEYBYTES(MLD_CONFIG_PARAMETER_SET)
+#define MLD_SK_BYTES MLDSA_SECRETKEYBYTES(MLD_CONFIG_PARAMETER_SET)
+#define MLD_SIG_BYTES MLDSA_BYTES(MLD_CONFIG_PARAMETER_SET)
 
 /* ------------------------------------------------------------------------- */
 /* Heap-backed aligned allocator for mldsa-native's large working buffers.   */
@@ -71,9 +80,9 @@ static void print_us(const char *label, uint32_t us, const char *note)
 /* ------------------------------------------------------------------------- */
 /* Device keys                                                               */
 /* ------------------------------------------------------------------------- */
-static uint8_t *s_mldsa_pk; /* MLDSA65_PUBLICKEYBYTES = 1952 */
-static uint8_t *s_mldsa_sk; /* MLDSA65_SECRETKEYBYTES = 4032 */
-static uint8_t *s_mldsa_sig; /* MLDSA65_BYTES = 3309 */
+static uint8_t *s_mldsa_pk; /* MLD_PK_BYTES = 1952 */
+static uint8_t *s_mldsa_sk; /* MLD_SK_BYTES = 4032 */
+static uint8_t *s_mldsa_sig; /* MLD_SIG_BYTES = 3309 */
 static psa_key_id_t s_ecdsa_key = 0;
 static int s_ready = 0;
 
@@ -85,9 +94,9 @@ int app_hybrid_auth_init(void)
 {
     dwt_init();
 
-    s_mldsa_pk  = pvPortMalloc(MLDSA65_PUBLICKEYBYTES);
-    s_mldsa_sk  = pvPortMalloc(MLDSA65_SECRETKEYBYTES);
-    s_mldsa_sig = pvPortMalloc(MLDSA65_BYTES);
+    s_mldsa_pk  = pvPortMalloc(MLD_PK_BYTES);
+    s_mldsa_sk  = pvPortMalloc(MLD_SK_BYTES);
+    s_mldsa_sig = pvPortMalloc(MLD_SIG_BYTES);
     if (s_mldsa_pk == NULL || s_mldsa_sk == NULL || s_mldsa_sig == NULL)
     {
         PRINTF("hybrid_auth: allocation failed\r\n");
@@ -96,7 +105,7 @@ int app_hybrid_auth_init(void)
 
     PRINTF("\r\n=== Hybrid authentication: generating device keys ===\r\n");
 
-    /* ML-DSA-65 key pair from a 32-byte seed out of the PSA DRBG. */
+    /* ML-DSA key pair from a 32-byte seed out of the PSA DRBG. */
     uint8_t seed[MLDSA_SEEDBYTES];
     psa_generate_random(seed, sizeof(seed));
     uint32_t t0 = dwt_now();
@@ -105,10 +114,10 @@ int app_hybrid_auth_init(void)
     memset(seed, 0, sizeof(seed));
     if (rc != 0)
     {
-        PRINTF("hybrid_auth: ML-DSA-65 keypair failed (%d)\r\n", rc);
+        PRINTF("hybrid_auth: ML-DSA keypair failed (%d)\r\n", rc);
         return -2;
     }
-    print_us("ML-DSA-65 keypair", cyc_to_us(dt), "pk 1952 B, sk 4032 B");
+    print_us(MLD_NAME " keypair", cyc_to_us(dt), "pk/sk sized per level");
 
     s_mld_prefix_len = mldsa_prepare_domain_separation_prefix(s_mld_prefix, NULL, 0, NULL, 0, MLD_PREHASH_NONE);
     if (s_mld_prefix_len == 0)
@@ -149,7 +158,7 @@ int app_hybrid_auth_sign_verify(const uint8_t *msg, size_t msg_len, app_hybrid_a
     }
     memset(res, 0, sizeof(*res));
 
-    /* --- ML-DSA-65: hedged (randomised) signing, rnd from the PSA DRBG --- */
+    /* --- ML-DSA: hedged (randomised) signing, rnd from the PSA DRBG --- */
     uint8_t rnd[MLDSA_RNDBYTES];
     psa_generate_random(rnd, sizeof(rnd));
     uint32_t t0 = dwt_now();
@@ -161,7 +170,7 @@ int app_hybrid_auth_sign_verify(const uint8_t *msg, size_t msg_len, app_hybrid_a
         PRINTF("hybrid_auth: ML-DSA sign failed (%d)\r\n", rc);
         return -2;
     }
-    res->mldsa_sig_len = MLDSA65_BYTES;
+    res->mldsa_sig_len = MLD_SIG_BYTES;
 
     t0                   = dwt_now();
     rc                   = mldsa_verify(s_mldsa_sig, msg, msg_len, NULL, 0, s_mldsa_pk);
@@ -193,7 +202,7 @@ int app_hybrid_auth_sign_verify(const uint8_t *msg, size_t msg_len, app_hybrid_a
 
     /* --- Header value: mldsa65=<b64>;ecdsa-p256=<b64> --- */
     size_t pos = 0, olen = 0;
-    const char *k1 = "mldsa65=";
+    const char *k1 = "mldsa" MLD_LEVEL_STR "=";
     const char *k2 = ";ecdsa-p256=";
     if (hdr_cap < strlen(k1) + strlen(k2) + 8)
     {
@@ -201,7 +210,7 @@ int app_hybrid_auth_sign_verify(const uint8_t *msg, size_t msg_len, app_hybrid_a
     }
     memcpy(hdr + pos, k1, strlen(k1));
     pos += strlen(k1);
-    if (mbedtls_base64_encode((unsigned char *)hdr + pos, hdr_cap - pos, &olen, s_mldsa_sig, MLDSA65_BYTES) != 0)
+    if (mbedtls_base64_encode((unsigned char *)hdr + pos, hdr_cap - pos, &olen, s_mldsa_sig, MLD_SIG_BYTES) != 0)
     {
         return -5;
     }
@@ -265,10 +274,10 @@ void app_hybrid_auth_bench(void)
 
     PRINTF("\r\n=== Authentication micro-benchmark (%d runs; ML-DSA signing is randomised) ===\r\n",
            AUTH_BENCH_RUNS);
-    PRINTF("-- ML-DSA-65 (mldsa-native, portable C, REDUCE_RAM, heap buffers) --\r\n");
+    PRINTF("-- ML-DSA (mldsa-native, portable C, REDUCE_RAM, heap buffers) --\r\n");
 
-    uint8_t *pk = pvPortMalloc(MLDSA65_PUBLICKEYBYTES);
-    uint8_t *sk = pvPortMalloc(MLDSA65_SECRETKEYBYTES);
+    uint8_t *pk = pvPortMalloc(MLD_PK_BYTES);
+    uint8_t *sk = pvPortMalloc(MLD_SK_BYTES);
     if (pk && sk)
     {
         uint8_t seed[MLDSA_SEEDBYTES];
@@ -279,7 +288,7 @@ void app_hybrid_auth_bench(void)
             sink |= mldsa_keypair_internal(pk, sk, seed);
             us[i] = cyc_to_us(dwt_now() - t0);
         }
-        print_stats("ML-DSA-65 keypair", us, AUTH_BENCH_RUNS, "");
+        print_stats(MLD_NAME " keypair", us, AUTH_BENCH_RUNS, "");
     }
     vPortFree(sk);
     vPortFree(pk);
@@ -292,7 +301,7 @@ void app_hybrid_auth_bench(void)
                                          s_mldsa_sk, 0);
         us[i] = cyc_to_us(dwt_now() - t0);
     }
-    print_stats("ML-DSA-65 sign (32 B msg)", us, AUTH_BENCH_RUNS, "sig 3309 B");
+    print_stats(MLD_NAME " sign (32 B msg)", us, AUTH_BENCH_RUNS, "sig sized per level");
 
     for (int i = 0; i < AUTH_BENCH_RUNS; i++)
     {
@@ -300,7 +309,7 @@ void app_hybrid_auth_bench(void)
         sink |= mldsa_verify(s_mldsa_sig, msg, sizeof(msg), NULL, 0, s_mldsa_pk);
         us[i] = cyc_to_us(dwt_now() - t0);
     }
-    print_stats("ML-DSA-65 verify", us, AUTH_BENCH_RUNS, sink == 0 ? "all ok" : "ERRORS");
+    print_stats(MLD_NAME " verify", us, AUTH_BENCH_RUNS, sink == 0 ? "all ok" : "ERRORS");
 
     /* --- RSA-2048 reference (mbedTLS test server key) — "today's" signature --- */
     PRINTF("-- RSA reference (mbedTLS test key, PKCS#1 v1.5, SHA-256) --\r\n");
