@@ -20,14 +20,15 @@ Source and patches: this repository (`app/` = untouched baseline, `app_tls13/` =
 | **Hybrid key exchange + hybrid device authentication** (ML-DSA-44 + ECDSA P-256) | **238 ms** | **−11 %** | yes, 100 % of rounds |
 | same with ML-DSA-65 instead of ML-DSA-44 | 379 ms | +42 % | yes, but misses target |
 | Hybrid key exchange with the ML-KEM NTTs on the **PowerQuad** accelerator (§5.2.1) | 217 ms (CPU-NTT arm of the same run: 179) | −18 % | yes, but +38 ms vs the CPU NTT |
-| Hybrid key exchange + hybrid auth, **key share precomputed during the TCP connect** (§4, item 6) | 243 ms (inline arm of the same run: 262); handshake 56 ms = classical TLS 1.3 | −9 % | yes, 50/50, 0 fallbacks |
+| **Final: hybrid key exchange + hybrid device authentication, key share precomputed during the TCP connect** (§4, item 6; run 21) | **201 ms** (inline arm of the same run: 224); handshake 52 ms ≈ classical TLS 1.3 | **−24 %** | yes, 50/50, 0 fallbacks |
 
 **Result: the primary goal — hybrid authentication and key establishment with no increase in
 end-to-end latency over the RSA baseline — is met on this board, in portable C, without
-accelerating any post-quantum operation.** The margin did not come from faster lattice maths;
-it came from three "software support" fixes the migration exposed (§4). The post-quantum
-algorithms themselves cost 16 ms (ML-KEM-768) and ~90 ms (ML-DSA-44 + ECDSA signing) per
-connection.
+accelerating any post-quantum operation: 201 ms against 266 ms, 24 % faster.** The margin did
+not come from faster lattice maths; it came from three "software support" fixes the migration
+exposed and from hiding the client's key generation behind the TCP connect (§4). The
+post-quantum algorithms themselves cost 16 ms (ML-KEM-768) and ~90 ms (ML-DSA-44 + ECDSA
+signing) of CPU per connection.
 
 Everything was measured on the board with interleaved A/B/C arms (each configuration takes
 turns, round by round, so all see the same network at the same moments), 100 rounds per run,
@@ -196,9 +197,9 @@ connect + handshake + auth + GET, medians.
 | 7 | Memory sizing for PQC (correctness, not speed) | Client task stack 16 → 32 KB; heap 96 → 192 KB; ML-DSA working memory on the heap with a 64-byte-aligned allocator (`REDUCE_RAM`); stack-overflow checking actually enabled | from silent hangs to 0 failed rounds in every CPU-NTT arm of runs 7–20 | 7, 20 | `main.c`, `prj.conf`, `app_hybrid_auth.c` |
 
 Net effect on the deployment configuration (hybrid KEX + ML-DSA-44/ECDSA device signature):
-**266 ms baseline → 238 ms (run 13) → ≈ 205–220 ms with #6** (run 20 measured 243 vs 262 on a
-noisier network; subtract the same 17–19 ms from run 19's 222). Without device authentication,
-hybrid key exchange alone is ≈ 158 ms, below the classical TLS 1.3 arm.
+**266 ms baseline → 238 ms (run 13) → 201 ms with #6 (run 21, quiet network; inline arm of
+the same run 224 ms)**. Without device authentication, hybrid key exchange alone is ≈ 158 ms,
+below the classical TLS 1.3 arm.
 
 Tried and measured, **not adopted**:
 
@@ -399,4 +400,5 @@ running in software!), consider Keccak assembly, ignore the NPU for lattice math
 | 17 | per-block verify build | — | root cause: engine clamps outputs at +32 767 |
 | 18 | 5-bit coefficient limbs (fix), 4 arms | 217 (PQ) / 179 (CPU NTT) / 163 / 181 ms | 100/100 ok; PowerQuad NTT 23.8× slower, +37 ms |
 | 19 | deployment config (hybrid KEX + ML-DSA-44/ECDSA sign-only), CPU NTT vs PowerQuad NTT, 50 + 50 | **222** (CPU) / 281 (PQ) ms | PowerQuad arm would miss the 266 ms target |
-| 20 | deployment config, key share precomputed during TCP connect vs inline, 50 + 50 | **243** / 262 ms | handshake 56 vs 73 ms (−17); 50/50 ready in time |
+| 20 | deployment config, key share precomputed during TCP connect vs inline, 50 + 50 | 243 / 262 ms | handshake 56 vs 73 ms (−17); 50/50 ready in time |
+| **21** | **same, quiet network** | **201** / 224 ms | **final headline: −65 ms (−24 %) vs baseline**; handshake 52 vs 71 |

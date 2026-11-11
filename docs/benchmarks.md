@@ -558,6 +558,30 @@ out). Set to `=y` (method 1); the helper stack is now 20 KB.
   `connect()` returns, so PSA is never used from two tasks at once.
 * Auth medians 87 vs 94 are ML-DSA retry variance (same code, same arm settings).
 
+## Run 21 — **headline for the deployment configuration**: same as run 20, quiet network
+
+Same firmware and mode as run 20, re-run on a quiet network (TCP connect medians 19–20 ms,
+stalls only around rounds 7–10, 39–41, 63–64, 69–72 and visible in avg/max only).
+
+| Arm | TCP connect | TLS handshake | Hybrid auth | HTTP GET | Full round | ok |
+|---|---|---|---|---|---|---|
+| **MLKEM+MLDSA+pre** | 20 | **52** | 77 | 41 | **201** | 50/50 |
+| MLKEM+MLDSAsign (inline) | 19 | **71** | 75 | 40 | **224** | 50/50 |
+
+```
+Precomputed key shares: 50 generated during TCP connect, 50 used, 0 not ready in time (inline fallback); helper stack peak 14040 B
+```
+
+### Analysis
+
+* Handshake −19 ms (71 → 52) with the auth and HTTP columns equal between arms: the whole
+  difference is the precomputed key share. Full round −23 ms.
+* **Deployment configuration — TLS 1.3, X25519MLKEM768, ML-DSA-44 + ECDSA P-256 device
+  signature, key share precomputed — 201 ms vs the 266 ms baseline: −65 ms (−24 %).** This
+  replaces run 13's 238 ms as the headline number.
+* Run 20 (243 vs 262) and run 21 (201 vs 224) agree on the arm-to-arm difference (−19 to −23 ms)
+  and differ only in network quality; compare arms within a run.
+
 ## Comparison (medians)
 
 ### Against the agreed baseline (TLS 1.2, seed per connection, clean network: **266 ms**)
@@ -572,7 +596,7 @@ out). Set to `=y` (method 1); the helper stack is now 20 KB.
 | same, with self-verify (run 13) | 72 | 94 | 261 | −5 ms (−2 %) |
 | TLS 1.3 + X25519MLKEM768 + ML-DSA-**65**/ECDSA auth, with self-verify (run 10) | 77 | 155 | 379 | **+113 ms — target missed** |
 | TLS 1.3 + X25519MLKEM768, NTTs on the **PowerQuad** (run 18; CPU-NTT arm of the same run: 179) | 109 | – | 217 | −49 ms, but **+38 ms vs CPU NTT** — negative result |
-| TLS 1.3 + X25519MLKEM768 + ML-DSA-44/ECDSA auth, **key share precomputed during TCP connect** (run 20; inline arm of the same run: 262) | **56** | 87 | 243 | **−17 ms handshake vs inline**; hybrid handshake = classical TLS 1.3 handshake |
+| **TLS 1.3 + X25519MLKEM768 + ML-DSA-44/ECDSA auth, key share precomputed during TCP connect** (run 21, quiet network; inline arm of the same run: 224) | **52** | 77 | **201** | **−65 ms (−24 %)** — final deployment configuration |
 
 → **Hybrid post-quantum key establishment *and* hybrid authentication (ML-DSA-44 + ECDSA P-256,
 device signing) meet the "no increase in end-to-end latency" goal on the FRDM-MCXN947, without
