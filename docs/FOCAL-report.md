@@ -179,6 +179,39 @@ And one that gave latency back without touching the maths:
    mbedTLS here has no threading support, so the client waits for the helper right after
    `connect()` returns — the two tasks never use PSA at the same time.
 
+### 4.1 Optimisations applied — summary
+
+Everything that was changed to get from 266 ms to the final numbers, in the order it was done,
+with the effect measured in an interleaved A/B on the board. "Round" is the full
+connect + handshake + auth + GET, medians.
+
+| # | Optimisation | What it changes | Measured effect | Run | Where |
+|---|---|---|---|---|---|
+| 1 | **TLS 1.3 instead of TLS 1.2** | One handshake round trip fewer; prerequisite for hybrid groups | handshake 140 → 55 ms; round −30 ms on its own | 3, 5 | `app_mbedtls_user_config.h`, version pin per connection in `app_mbedtls_socket.c` |
+| 2 | **DRBG seeded once at boot** | Original firmware gathered TRNG entropy and reseeded on every connection | **−74 ms** per connection | 6 | `APP_DRBG_SEED_ONCE` in `app_mbedtls_socket.c` |
+| 3 | **lwIP receive window 2×MSS → 4×MSS** (+ larger pbuf pool, 32 KB lwIP heap) | Server's first flight with an ML-KEM ciphertext (~2.9 KB) no longer stalls for an extra ACK round trip | hybrid handshake 102 → 73 ms, **−29 ms** | 9 | `prj.conf` (`TCP_WND`, `PBUF_POOL_SIZE`, `MEM_SIZE`) |
+| 4 | **ML-DSA-44 instead of ML-DSA-65** | NIST category 2 signature instead of 3; 23.7 vs 36.5 ms per signing attempt, 2420 vs 3309 B signature | round 379 → 289 ms (with self-verify) | 10, 11 | `app_mldsa_config.h` |
+| 5 | **Sign-only device auth (no on-device self-verify)** | The peer verifies; the device no longer runs ML-DSA verify (15 ms) + ECDSA verify (20 ms) after signing | round 261 → **238 ms** | 12, 13 | `hybrid_auth = 2` arm, `app_hybrid_auth.c` |
+| 6 | **Key share generated during the TCP connect** | ML-KEM keypair + X25519 keygen run in a helper task while the client waits for the SYN-ACK | handshake 73 → **56 ms** (−17), hybrid handshake = classical TLS 1.3 | 20 | `app_keyshare.c`, hook in the SDK patch |
+| 7 | Memory sizing for PQC (correctness, not speed) | Client task stack 16 → 32 KB; heap 96 → 192 KB; ML-DSA working memory on the heap with a 64-byte-aligned allocator (`REDUCE_RAM`); stack-overflow checking actually enabled | from silent hangs to 0 failed rounds in every CPU-NTT arm of runs 7–20 | 7, 20 | `main.c`, `prj.conf`, `app_hybrid_auth.c` |
+
+Net effect on the deployment configuration (hybrid KEX + ML-DSA-44/ECDSA device signature):
+**266 ms baseline → 238 ms (run 13) → ≈ 205–220 ms with #6** (run 20 measured 243 vs 262 on a
+noisier network; subtract the same 17–19 ms from run 19's 222). Without device authentication,
+hybrid key exchange alone is ≈ 158 ms, below the classical TLS 1.3 arm.
+
+Tried and measured, **not adopted**:
+
+| Attempt | Result | Why not | Run |
+|---|---|---|---|
+| ML-KEM NTT on the PowerQuad matrix engine | correct, but NTT 23.8× slower; handshake **+37 ms**; deployment config 281 ms (misses target) | dense 16×16 products at 1.8 cycles/MAC vs an O(n log n) butterfly; limb splitting for a float32 datapath with an undocumented 16-bit output clamp (§5.2.1) | 14–19 |
+| NTT on the eIQ Neutron NPU | not executable | runtime and converter not in the public SDK; quantised int8 output path cannot deliver exact results; invocation overhead > the whole software NTT | — |
+| ML-DSA-65 | 379 ms, misses target | signing 155 ms average in portable C | 10 |
+
+Identified, **not done** (see §5.3 for the expected gains): ELS/PKC hardware elliptic-curve
+(≈ 15 ms), assembly Keccak (≈ 5 ms KEX, 10–20 ms signing), dual-core ML-DSA signing race
+(≈ 25 ms off the median, halves the tail).
+
 ---
 
 ## 5. Acceleration analysis (deliverable 3)
