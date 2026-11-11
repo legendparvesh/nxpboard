@@ -216,6 +216,64 @@ The hybrid arm is now **+16 ms over TLS 1.3 classic — equal to the measured ML
 cost (6.6 + 9.2 = 15.8 ms, run 8)**. The transport overhead of the extra 2.3 KB is gone.
 Lesson: the first PQC cost that hurt was not crypto but a TCP buffer sized for ~2 KB handshakes.
 
+## Run 10 — step 4: hybrid authentication ML-DSA-65 + ECDSA P-256, four arms, 100 rounds
+
+`app_tls13/`, `EXAMPLE_TLS_MODE=7`: arms `MLKEM+MLDSAauth` / `TLS1.3+MLKEM` / `TLS1.3` / `TLS1.2`,
+25 rounds each, interleaved. ML-DSA-65 from mldsa-native (portable C, `REDUCE_RAM`, large
+buffers on the FreeRTOS heap), ECDSA P-256 via PSA (software). Device keys generated at boot
+(ML-DSA-65 keypair 25.4 ms, ECDSA 11.2 ms). In the auth arm the board signs the TLS 1.3 exporter
+value (32 B, label `EXPORTER-focal-hybrid-auth`) with both algorithms, verifies both itself, and
+sends `X-Hybrid-Auth: mldsa65=<b64>;ecdsa-p256=<b64>` (4520 chars) with the GET.
+100/100 OK, 0 self-verify failures, server answered 200 / `hybrid-pqc` to every signed request.
+Network slightly worse than run 9 (TCP connect median 24–27 ms vs 20).
+
+| Phase (median, ms) | TLS 1.2 | TLS 1.3 | TLS 1.3 + ML-KEM | TLS 1.3 + ML-KEM + hybrid auth |
+|---|---|---|---|---|
+| TCP connect (control) | 27 | 26 | 24 | 26 |
+| TLS handshake | 153 | 61 | 77 | 77 |
+| Hybrid auth (sign + self-verify) | – | – | – | **155** (min 97, max 463) |
+| HTTP GET | 26 | 90 | 92 | 52 |
+| **Full round** | 206 | 186 | 201 | **379** |
+| Request bytes tx | 452 | 428 | 1614 | **6142** |
+
+Authentication micro-benchmark (DWT, 10 runs):
+
+| Operation | min | median | max | note |
+|---|---|---|---|---|
+| ML-DSA-65 keypair | 25.42 | 25.42 | 25.45 | |
+| **ML-DSA-65 sign (32 B)** | **36.5** | **115.3** | **363.6** | rejection sampling: ~36 ms/attempt; sig 3309 B |
+| ML-DSA-65 verify | 25.46 | 25.46 | 25.55 | |
+| ECDSA P-256 sign (PSA, software) | | 11.4 | | |
+| ECDSA P-256 verify (PSA, software) | | 20.3 | | |
+| RSA-2048 sign (mbedTLS test key, software) | 197.7 | 197.7 | 197.7 | RSA-3072 sign ≈ 3–4× this |
+| RSA-2048 verify | 2.20 | 2.20 | 2.21 | |
+| **RSA-3072 verify, live server key** | | **4.42** | | what the baseline client does per handshake |
+
+Per-round averages in the auth arm: ML-DSA-65 sign 122 ms, verify 25.5 ms, ECDSA sign 11.4 ms,
+verify 20.3 ms. (HTTP GET is *lower* in this arm because the server's NewSessionTicket records
+arrive during the ~155 ms of signing and are already buffered when the GET reads.)
+
+### Findings
+
+* **Target missed for hybrid KEX + hybrid auth as demonstrated: 379 ms vs 266 ms (+113 ms).**
+* The direction of the comparison matters:
+  * **Verifier side** (board checks a hybrid signature instead of RSA-3072): ML-DSA-65 verify
+    25.5 + ECDSA verify 20.3 = 46 ms vs 4.4 ms → +41 ms on the 175 ms hybrid-KEX round
+    = ~216 ms, **50 ms under baseline**. Replacing the server's RSA signature meets the target.
+  * **Signer side** (board authenticates itself): ML-DSA-65 + ECDSA sign ≈ 126 ms vs RSA-2048
+    sign 198 ms (RSA-3072 ≈ 600–700 ms). **Hybrid PQ signing is 2–5× faster than RSA signing
+    on this chip.**
+* Of the 155 ms, 46 ms is self-verification (demo artifact: no verifier available); a real
+  deployment is ~333 ms. The remaining gap is ML-DSA-65 signing: ~115 ms median with large
+  variance (1–10 rejection-sampling attempts at ~36 ms each). ECDSA adds ~31 ms in software.
+* Actionable levers, in order: ML-DSA-44 (≈2× faster sign, 2420 B sig); ELS/PKC hardware ECDSA
+  (≈ −30 ms); optimised Keccak (ML-DSA is also Keccak-dominated: matrix expansion + per-attempt
+  sampling). Estimate for ML-DSA-44 + software ECDSA, no self-verify: 175 + ~55 + 11 ≈ 240 ms.
+* Communication overhead of hybrid auth: +4.5 KB per authenticated request (ML-DSA-65 signature
+  3309 B base64-encoded + ECDSA 64 B); public keys 1952 + 64 B.
+* Memory: ML-DSA-65 signing needs ~68 KB working memory (heap-backed; task stack would not do);
+  flash 463 → 489 KB (+26 KB); heap raised to 192 KB.
+
 ## Comparison (medians)
 
 ### Against the agreed baseline (TLS 1.2, seed per connection, clean network: **266 ms**)
