@@ -51,6 +51,22 @@ static inline void pq_block(const int16_t *w_tile, const int16_t *b_block)
     PQ_MatrixMultiplication(POWERQUAD, POWERQUAD_MAKE_MATRIX_LEN(TILE, TILE, BCOLS), (void *)w_tile, (void *)b_block,
                             s_tmp);
     PQ_WaitDone(POWERQUAD);
+    /* The engine's last result write may still be in the bus write buffer when
+     * BUSY clears; make sure it has landed before the CPU reads s_tmp. */
+    __DSB();
+    __ISB();
+}
+
+/* CPU reference of one block product, for diagnosing mismatches. */
+static void cpu_block(const int16_t *w_tile, const int16_t *b_block, int32_t out[TILE][BCOLS])
+{
+    for (int i = 0; i < TILE; i++)
+        for (int c = 0; c < BCOLS; c++)
+        {
+            int32_t s = 0;
+            for (int k = 0; k < TILE; k++) s += (int32_t)w_tile[i * TILE + k] * b_block[k * BCOLS + c];
+            out[i][c] = s;
+        }
 }
 
 void app_pq_ntt(int16_t p[256])
@@ -129,9 +145,39 @@ void app_pq_ntt_bench(void)
 
     PRINTF("-- ML-KEM NTT on the PowerQuad matrix engine --\r\n");
 
+    /* Engine arithmetic check: 2000 random block products vs CPU (exactness + result-write race). */
+    {
+        int32_t ref[TILE][BCOLS];
+        int bad_blocks = 0;
+        for (int t = 0; t < 2000; t++)
+        {
+            uint8_t rnd[128 * BCOLS * 2];
+            psa_generate_random(rnd, sizeof(rnd));
+            for (int k = 0; k < 128 * BCOLS; k++) ((int16_t *)s_b)[k] = (int16_t)(rnd[2 * k] & 63);
+            const int tile = (rnd[0] % (NT * NT)) * TILE * TILE;
+            const int16_t *b_block = &s_b[(rnd[1] % NT) * TILE][0];
+            pq_block(&app_pq_w_hi[tile], b_block);
+            cpu_block(&app_pq_w_hi[tile], b_block, ref);
+            if (memcmp(ref, s_tmp, sizeof(ref)) != 0)
+            {
+                if (bad_blocks < 3)
+                {
+                    for (int i = 0; i < TILE; i++)
+                        for (int c = 0; c < BCOLS; c++)
+                            if (ref[i][c] != s_tmp[i][c])
+                                PRINTF("    block mismatch: out[%d][%d] engine %ld vs cpu %ld\r\n", i, c,
+                                       (long)s_tmp[i][c], (long)ref[i][c]);
+                }
+                bad_blocks++;
+            }
+        }
+        PRINTF("  engine check: 2000 random 16x16x4 block products vs CPU, %d mismatching -> %s\r\n", bad_blocks,
+               bad_blocks == 0 ? "PASS" : "FAIL");
+    }
+
     /* Correctness: PowerQuad NTT == software NTT (mod q) on random polynomials. */
     int bad = 0;
-    const int trials = 50;
+    const int trials = 200;
     for (int t = 0; t < trials; t++)
     {
         for (int v = 0; v < 3; v++) fill_random_poly(sw->vec[v].coeffs);
@@ -145,12 +191,18 @@ void app_pq_ntt_bench(void)
             {
                 int32_t a = ((sw->vec[v].coeffs[i] % Q) + Q) % Q;
                 int32_t b = ((hw->vec[v].coeffs[i] % Q) + Q) % Q;
-                if (a != b) bad++;
+                if (a != b)
+                {
+                    if (bad < 5)
+                        PRINTF("    NTT mismatch: trial %d poly %d coeff %d: engine %ld vs cpu %ld\r\n", t, v, i, (long)b,
+                               (long)a);
+                    bad++;
+                }
             }
     }
     app_pq_ntt_enabled = 0;
-    PRINTF("  correctness: %d random polyvecs (%d NTTs), %d coefficient mismatches -> %s\r\n", trials, trials * 3, bad,
-           bad == 0 ? "PASS" : "FAIL");
+    PRINTF("  correctness: %d random polyvecs (%d NTTs, %d coefficients), %d mismatches -> %s\r\n", trials, trials * 3,
+           trials * 3 * 256, bad, bad == 0 ? "PASS" : "FAIL");
 
     /* Raw engine cost: one 16x16 * 16x4 block product incl. wait. */
     {

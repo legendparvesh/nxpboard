@@ -356,6 +356,53 @@ median 20 ms in all five arms** → directly comparable to the 266 ms baseline. 
 Per-round averages, both auth arms: ML-DSA-44 sign ≈ 77 ms, ECDSA P-256 sign 11.4 ms
 (+ self-verify arm: ML-DSA verify 15.3, ECDSA verify 20.3 ms).
 
+## Run 14 — ML-KEM NTT on the PowerQuad matrix engine, four arms, 100 rounds
+
+`EXAMPLE_TLS_MODE=10`: `MLKEM(PQ-NTT)` (hybrid KEX, forward NTTs on the PowerQuad via the
+mlkem-native `MLK_USE_NATIVE_NTT` hook) / `TLS1.3+MLKEM` (CPU NTT) / `TLS1.3` / `TLS1.2`.
+Implementation: NTT = two 128×128 matrix-vector products (FIPS 203 even/odd form), operands split
+into 6-bit limbs for exactness in the engine's float32 datapath, twiddles stored as 8×8 tiles of
+16×16 (engine maximum), 128 `PQ_MatrixMultiplication` calls per NTT, CPU accumulation,
+limb recombination and reduction mod q. Twiddle tables generated and checked against Algorithm 9
+by `tools/gen_pq_ntt_tables.py`. Network mediocre (TCP connect medians 28–35 ms).
+
+Micro-benchmark (DWT, min of 20):
+
+| | cycles | ms |
+|---|---|---|
+| one 16×16 × 16×4 block product incl. start/wait (1024 MAC) | 1 649 | **1.61 cycles/MAC** |
+| NTT, software (Cortex-M33, portable C) | **19 835** | 0.132 |
+| NTT, PowerQuad (128 tiled block products) | **293 546** | 1.957 → **14.8× slower** |
+| ML-KEM-768 keypair + decaps, NTT on CPU | 999 719 + 1 384 218 | 15.9 |
+| ML-KEM-768 keypair + decaps, NTT on PowerQuad | 2 642 195 + 3 026 885 | 37.8 |
+
+Handshake arms (median, ms): hybrid KEX with PowerQuad NTT **105** vs CPU NTT **86** (handshake),
+full round **261 vs 241**. TLS 1.3 classic 64 / 212, TLS 1.2 176 / 245.
+
+Correctness (first build): 1 coefficient mismatch in 150 NTTs (38 400 coefficients) and one
+handshake of 25 failed with a record-MAC error — a rare wrong NTT. The arithmetic is exact by
+construction (every 16-term dot product < 2²⁴), so the suspect is a read of the result buffer
+racing the engine's final write; a DSB/ISB after `PQ_WaitDone` and a 2 000-block engine check
+were added (run 15).
+
+### Analysis
+
+* The PowerQuad can execute ML-KEM's NTT, but **14.8× slower than the CPU butterfly**, and the
+  hybrid handshake gets ~19 ms *slower*. Three measured reasons:
+  1. **Complexity class:** the engine offers dense products only; a 256-point NTT is 131 k MACs
+     that way, versus ~2 k multiplications for the O(n log n) butterfly the CPU runs.
+  2. **16×16 operand limit:** 128 engine invocations per NTT; the 1.61 cycles/MAC already includes
+     their start/wait overhead.
+  3. **Float32 datapath:** 12-bit modular operands must be split into 6-bit limbs (4× products)
+     and reduced mod q on the CPU afterwards.
+* Ceiling from the measured throughput: a four-step NTT (16-point and 8-point stages, ≈ 25 k MACs)
+  would need ≥ 40 k cycles on the engine before overheads — still 2× the CPU. There is no
+  formulation in which this engine wins the NTT.
+* The NPU (eIQ Neutron) is not reachable from this SDK checkout (eIQ middleware lives in an
+  NXP-internal manifest) and requires the host-side eIQ model converter; its int8×int8 datapath
+  would need 4 (ML-KEM) to 9 (ML-DSA) limb products per transform plus per-invocation runtime
+  overhead of hundreds of µs, versus 132 µs for the whole software NTT.
+
 ## Comparison (medians)
 
 ### Against the agreed baseline (TLS 1.2, seed per connection, clean network: **266 ms**)
