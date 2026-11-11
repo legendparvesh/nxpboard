@@ -30,7 +30,8 @@ typedef struct https_client_task_context
      *   7 = hybrid KEX + hybrid AUTH (ML-DSA-65 + ECDSA) vs hybrid KEX vs TLS 1.3 vs TLS 1.2 (4 arms)
      *   8 = hybrid KEX + hybrid AUTH only
      *   9 = hybrid AUTH sign-only (deployment) vs hybrid AUTH with self-verify vs hybrid KEX
-     *       vs TLS 1.3 vs TLS 1.2 (5 arms) */
+     *       vs TLS 1.3 vs TLS 1.2 (5 arms)
+     *  10 = hybrid KEX with NTTs on the PowerQuad vs hybrid KEX (CPU NTT) vs TLS 1.3 vs TLS 1.2 */
     uint32_t tls_mode;
 } https_client_task_context_t;
 

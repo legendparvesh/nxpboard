@@ -29,6 +29,11 @@ mcux_add_source(
             examples/focal_challenge/freertos/app_hybrid_auth.h
             examples/focal_challenge/freertos/app_hybrid_auth.c
             examples/focal_challenge/freertos/app_mldsa_config.h
+            # ML-KEM NTT on the PowerQuad matrix engine (mlkem-native native backend)
+            examples/focal_challenge/freertos/app_pq_ntt.h
+            examples/focal_challenge/freertos/app_pq_ntt.c
+            examples/focal_challenge/freertos/app_pq_ntt_tables.c
+            examples/focal_challenge/freertos/app_pq_ntt_backend.h
             # ML-KEM-768 (mlkem-native, single-compilation-unit build) for X25519MLKEM768.
             # focal_third_party -> ../../../third_party (symlink made by `make graft`).
             examples/focal_third_party/mlkem-native/mlkem/mlkem_native.c
@@ -40,6 +45,7 @@ mcux_add_include(
     BASE_PATH ${SdkRootDirPath}
     INCLUDES examples/focal_challenge/freertos
              examples/focal_third_party/mlkem-native/mlkem
+             examples/focal_third_party/mlkem-native/mlkem/src
              examples/focal_third_party/mldsa-native/mldsa
 )
 
@@ -55,7 +61,9 @@ mcux_add_macro(
 mcux_add_macro(
     CC "-DMLK_CONFIG_PARAMETER_SET=768\
         -DMLK_CONFIG_NAMESPACE_PREFIX=mlkem\
-        -DMLK_CONFIG_NO_RANDOMIZED_API"
+        -DMLK_CONFIG_NO_RANDOMIZED_API\
+        -DMLK_CONFIG_USE_NATIVE_BACKEND_ARITH\
+        -DMLK_CONFIG_ARITH_BACKEND_FILE=\\\"app_pq_ntt_backend.h\\\""
 )
 
 # MBEDTLS_USER_CONFIG_FILE is appended to the NXP port config by the SDK, so

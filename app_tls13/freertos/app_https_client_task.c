@@ -26,6 +26,7 @@
 #include "app_mbedtls_socket.h"
 #include "app_pqc_bench.h"
 #include "app_hybrid_auth.h"
+#include "app_pq_ntt.h"
 
 #ifndef APP_PQC_BENCH
 /* 1 = run the crypto micro-benchmarks once before the TLS rounds. */
@@ -40,6 +41,7 @@ typedef struct
     int hybrid_kex;    /* 1 = offer X25519MLKEM768 first */
     int hybrid_auth;   /* 1 = sign the TLS exporter with ML-DSA + ECDSA, self-verify, send it;
                         * 2 = sign and send only (deployment mode: the peer verifies) */
+    int pq_ntt;        /* 1 = run ML-KEM's forward NTTs on the PowerQuad matrix engine */
 } bench_arm_t;
 
 #define MAX_ARMS 5
@@ -83,11 +85,12 @@ void app_https_client_task_init(https_client_task_context_t *context,
 /* Translate tls_mode (see app_https_client_task.h) into a list of arms. */
 static uint32_t build_arms(uint32_t tls_mode, bench_arm_t *arms)
 {
-    const bench_arm_t tls12  = {"TLS1.2         ", 2, 0, 0};
-    const bench_arm_t tls13  = {"TLS1.3         ", 3, 0, 0};
-    const bench_arm_t hybrid = {"TLS1.3+MLKEM   ", 3, 1, 0};
-    const bench_arm_t auth   = {"MLKEM+MLDSAauth", 3, 1, 1};
-    const bench_arm_t authso = {"MLKEM+MLDSAsign", 3, 1, 2}; /* sign only, no self-verify */
+    const bench_arm_t tls12    = {"TLS1.2         ", 2, 0, 0, 0};
+    const bench_arm_t tls13    = {"TLS1.3         ", 3, 0, 0, 0};
+    const bench_arm_t hybrid   = {"TLS1.3+MLKEM   ", 3, 1, 0, 0};
+    const bench_arm_t hybridpq = {"MLKEM(PQ-NTT)  ", 3, 1, 0, 1}; /* NTTs on the PowerQuad */
+    const bench_arm_t auth     = {"MLKEM+MLDSAauth", 3, 1, 1, 0};
+    const bench_arm_t authso   = {"MLKEM+MLDSAsign", 3, 1, 2, 0}; /* sign only, no self-verify */
     uint32_t n = 0;
 
     switch (tls_mode)
@@ -100,6 +103,7 @@ static uint32_t build_arms(uint32_t tls_mode, bench_arm_t *arms)
         case 7: arms[n++] = auth; arms[n++] = hybrid; arms[n++] = tls13; arms[n++] = tls12; break;
         case 8: arms[n++] = auth; break;
         case 9: arms[n++] = authso; arms[n++] = auth; arms[n++] = hybrid; arms[n++] = tls13; arms[n++] = tls12; break;
+        case 10: arms[n++] = hybridpq; arms[n++] = hybrid; arms[n++] = tls13; arms[n++] = tls12; break;
         case 0:
         default: arms[n++] = tls13; arms[n++] = tls12; break;
     }
@@ -125,8 +129,10 @@ static void client_task(void *args)
 
     const uint32_t iterations = (context->iterations == 0U) ? 1U : context->iterations;
 
+    app_pq_ntt_init();
 #if APP_PQC_BENCH
     app_pqc_bench_run();
+    app_pq_ntt_bench();
 #endif
     const bool auth_ready = (app_hybrid_auth_init() == 0);
 #if APP_PQC_BENCH
@@ -182,6 +188,9 @@ static void client_task(void *args)
 
         /* Full protocol/cipher/certificate dump on the first round of each arm. */
         const bool verbose = (round <= n_arms);
+
+        /* Route ML-KEM's NTTs to the PowerQuad for this arm (read by the mlkem-native hook). */
+        app_pq_ntt_enabled = arm->pq_ntt;
 
         /* Round timer: TCP connect + TLS handshake [+ auth] + HTTP request/response. */
         const TickType_t t_round_start = xTaskGetTickCount();
