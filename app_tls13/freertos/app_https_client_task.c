@@ -23,6 +23,12 @@
 #include "app_https_client_task.h"
 #include "app_corehttp.h"
 #include "app_mbedtls_socket.h"
+#include "app_pqc_bench.h"
+
+#ifndef APP_PQC_BENCH
+/* 1 = run the crypto micro-benchmark once before the TLS rounds. */
+#define APP_PQC_BENCH 1
+#endif
 
 /* One benchmark arm = one TLS configuration. */
 typedef struct
@@ -104,6 +110,10 @@ static void client_task(void *args)
     assert(context->max_response_len > 0U);
 
     const uint32_t iterations = (context->iterations == 0U) ? 1U : context->iterations;
+
+#if APP_PQC_BENCH
+    app_pqc_bench_run();
+#endif
 
     bench_arm_t arms[MAX_ARMS];
     const uint32_t n_arms = build_arms(context->tls_mode, arms);

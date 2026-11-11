@@ -24,6 +24,8 @@ mcux_add_source(
             examples/focal_challenge/freertos/app_https_client_task.c
             examples/focal_challenge/freertos/core_http_config.h
             examples/focal_challenge/freertos/app_mbedtls_user_config.h
+            examples/focal_challenge/freertos/app_pqc_bench.h
+            examples/focal_challenge/freertos/app_pqc_bench.c
             # ML-KEM-768 (mlkem-native, single-compilation-unit build) for X25519MLKEM768.
             # focal_third_party -> ../../../third_party (symlink made by `make graft`).
             examples/focal_third_party/mlkem-native/mlkem/mlkem_native.c

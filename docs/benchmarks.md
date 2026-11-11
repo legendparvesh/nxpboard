@@ -149,6 +149,53 @@ keygen/decaps keep ~8–10 KB of polynomial vectors on the stack), +3.5 KB hands
 Lesson learned: with the original 16 KB task stack the hybrid handshake *hung silently*
 (configCHECK_FOR_STACK_OVERFLOW was off). Enabled overflow checking + hook; now 32 KB.
 
+## Run 8 — on-board crypto micro-benchmark (DWT cycle counter, 150 MHz, min of 10)
+
+`app_tls13/freertos/app_pqc_bench.c`, run once at start-up. Cycle-exact; minimum over 10 runs
+(interrupts can only add cycles). Converted at 150 MHz.
+
+| Operation | cycles | ms | note |
+|---|---|---|---|
+| ML-KEM-768 keypair (client, ClientHello) | 994 497 | **6.63** | mlkem-native, portable C |
+| ML-KEM-768 encaps (server side, reference) | 1 122 167 | 7.48 | |
+| ML-KEM-768 decaps (client, key schedule) | 1 379 016 | **9.19** | |
+| Keccak-f1600 ×4 (4 permutations) | 56 510 | 0.377 | → 14 100 cyc / permutation |
+| SHA3-512, 64 B (= G) | 15 666 | 0.104 | |
+| SHAKE256 33 B → 128 B (= PRF) | 15 821 | 0.105 | |
+| gen_matrix A (9 polys, SHAKE128 rejection sampling) | 461 900 | **3.08** | runs in keypair *and* decaps |
+| polyvec NTT (3 polys) | 59 487 | 0.397 | 19 800 cyc / poly |
+| polyvec invNTT + tomont (3 polys) | 101 331 | 0.676 | |
+| polyvec mulcache (3 polys) | 6 212 | 0.041 | |
+| X25519 keygen + export (PSA) | 1 623 520 | **10.82** | **software** — PKC not used by the port |
+| X25519 shared secret (PSA) | 813 253 | **5.42** | software |
+| ECDSA P-256 sign (PSA) | 1 706 326 | 11.38 | software |
+| ECDSA P-256 verify (PSA) | 3 028 607 | **20.19** | software — the classical half of hybrid auth |
+| SHA-256, 1 KB (PSA) | 6 276 | 0.042 | **hardware** (ELS) |
+| SHA3-256, 1 KB (software SHAKE) | 124 096 | 0.827 | 20× slower than HW SHA-256 |
+
+### Analysis
+
+* **ML-KEM crypto on the client = 6.6 + 9.2 = 15.8 ms per handshake**, i.e. only ~40 % of the
+  +41 ms the hybrid arm costs over TLS 1.3 classic (run 7). The remaining ~25 ms is transport:
+  +2.3 KB on the wire, the server's encapsulation, and lwIP's receive window (`TCP_WND` = 2 × MSS
+  = 2920 B) which is smaller than the server's ~2.9 KB first flight → likely one extra ACK round trip.
+* **Inside ML-KEM, hashing dominates**: gen_matrix alone is 3.1 ms and runs twice per handshake
+  (keypair + re-encryption in decaps); with the PRF/G/J calls, Keccak is ≈ 7.8 ms ≈ 50 % of the
+  ML-KEM time. **NTT/invNTT is ≈ 2 ms ≈ 13 %.**
+* **NPU / PowerQuad verdict (preliminary):** even a free, zero-latency NTT would save ≤ 2 ms of a
+  231 ms round (< 1 %), before counting data-transfer and setup costs. Not a worthwhile target.
+  The lever is Keccak, for which there is no hardware on the MCXN947; optimised Cortex-M
+  assembly (2–3× faster than portable C) would recover ~4–5 ms.
+* **Biggest finding: the classical crypto runs in software.** X25519 (16.2 ms per handshake) is
+  slower than all of ML-KEM; ECDSA P-256 verify is 20 ms. The ELS/PKC accelerator exists but the
+  SDK's mbedTLS 3.x port only hooks hardware entropy and hashing (SHA-256 is 20× faster than
+  software SHA-3, so the hash path *is* hardware). Wiring the PKC into the PSA ECC path would cut
+  ~15 ms from every arm now and ~18 ms from the ECDSA half of hybrid authentication later.
+  This is a "software support" obstacle in the sense of the challenge brief.
+
+Ranked acceleration plan: (1) lwIP window/pbuf tuning, (2) ELS/PKC for X25519 + ECDSA,
+(3) optimised Keccak assembly, (4) NPU/PowerQuad NTT — documented negative result.
+
 ## Comparison (medians)
 
 ### Against the agreed baseline (TLS 1.2, seed per connection, clean network: **266 ms**)
