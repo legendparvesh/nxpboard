@@ -83,8 +83,10 @@
  *  5 = hybrid only, 6 = hybrid vs TLS1.3 vs TLS1.2, 9 = five-arm headline,
  *  10 = PowerQuad NTT vs CPU NTT (KEX only), 11 = deployment config (hybrid KEX + ML-DSA-44/ECDSA
  *  sign-only auth) with ML-KEM NTT on CPU vs on the PowerQuad (two arms), 12 = deployment config
- *  with the hybrid key share precomputed during the TCP connect vs inline (two arms). */
-#define EXAMPLE_TLS_MODE 12
+ *  with the hybrid key share precomputed during the TCP connect vs inline (two arms),
+ *  13 = deployment config + precompute, with core 1 (ML-DSA signing race + ML-KEM decaps
+ *  offload) vs single core (two arms). */
+#define EXAMPLE_TLS_MODE 13
 #endif /* EXAMPLE_TLS_MODE */
 
 #ifndef EXAMPLE_MAX_REQUEST_LENGTH
@@ -164,8 +166,15 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
         ;
 }
 
+#if APP_DUALCORE
+#include "mcmgr.h"
+#endif
+
 int main(void)
 {
+#if APP_DUALCORE
+    (void)MCMGR_Init(); /* mailbox + event table; core 1 is started later by app_dualcore_start() */
+#endif
     BOARD_InitHardware();
 
     init_task_init();

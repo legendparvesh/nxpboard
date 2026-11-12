@@ -35,6 +35,11 @@
  * generation when none is ready. */
 #define MBEDTLS_SSL_TLS1_3_HYBRID_MLKEM_PRECOMPUTED
 
+/* Step 6: let the application run the ML-KEM decapsulation elsewhere (core 1)
+ * while mbedTLS computes the X25519 half of the hybrid shared secret. Falls
+ * back to inline decapsulation if the application declines. */
+#define MBEDTLS_SSL_TLS1_3_HYBRID_MLKEM_OFFLOAD
+
 /* --- Step 4: hybrid authentication ------------------------------------------ */
 
 /* RFC 5705/8446 exporter: the device signs a value derived from the live TLS

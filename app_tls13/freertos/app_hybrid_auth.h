@@ -23,6 +23,7 @@ typedef struct
     uint32_t ecdsa_sig_len; /* 64 for P-256 (r||s) */
     int mldsa_ok;           /* 1 = self-verify passed */
     int ecdsa_ok;
+    int mldsa_core;         /* which core produced the ML-DSA signature (0 or 1) */
 } app_hybrid_auth_result_t;
 
 /* Generate the device key pairs (once). Prints key-generation times. 0 on success. */
@@ -42,5 +43,8 @@ void app_hybrid_auth_bench(void);
 /* Time an RSA verify with the given public key (e.g. the live server's RSA-3072
  * certificate key): the operation the baseline client performs per handshake. */
 void app_hybrid_auth_bench_rsa_verify(const mbedtls_pk_context *pk, const char *label);
+
+/* Step 6: exercise core 1 (sign, abort, race, ML-KEM decaps). 0 = all passed. */
+int app_hybrid_auth_dualcore_selftest(void);
 
 #endif /* APP_HYBRID_AUTH_H */

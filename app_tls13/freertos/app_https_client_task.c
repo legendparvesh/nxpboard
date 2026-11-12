@@ -28,6 +28,8 @@
 #include "app_hybrid_auth.h"
 #include "app_pq_ntt.h"
 #include "app_keyshare.h"
+#include "app_dualcore.h"
+#include "app_mld_arena.h"
 
 #ifndef APP_PQC_BENCH
 /* 1 = run the crypto micro-benchmarks once before the TLS rounds. */
@@ -44,6 +46,7 @@ typedef struct
                         * 2 = sign and send only (deployment mode: the peer verifies) */
     int pq_ntt;        /* 1 = run ML-KEM's forward NTTs on the PowerQuad matrix engine */
     int precompute;    /* 1 = generate the hybrid key share during the TCP connect (app_keyshare.c) */
+    int dualcore;      /* 1 = ML-DSA signing race with core 1 + ML-KEM decaps on core 1 (app_dualcore.c) */
 } bench_arm_t;
 
 #define MAX_ARMS 5
@@ -95,6 +98,8 @@ static uint32_t build_arms(uint32_t tls_mode, bench_arm_t *arms)
     const bench_arm_t authso   = {"MLKEM+MLDSAsign", 3, 1, 2, 0}; /* sign only, no self-verify */
     const bench_arm_t authsopq = {"MLKEM+MLDSA(PQ)", 3, 1, 2, 1}; /* same, ML-KEM NTTs on the PowerQuad */
     const bench_arm_t authsopre = {"MLKEM+MLDSA+pre", 3, 1, 2, 0, 1}; /* same as authso, key share precomputed */
+    const bench_arm_t final_one = {"FINAL 1-core   ", 3, 1, 2, 0, 1, 0}; /* = authsopre */
+    const bench_arm_t final_two = {"FINAL 2-core   ", 3, 1, 2, 0, 1, 1}; /* + signing race and decaps on core 1 */
     uint32_t n = 0;
 
     switch (tls_mode)
@@ -110,6 +115,7 @@ static uint32_t build_arms(uint32_t tls_mode, bench_arm_t *arms)
         case 10: arms[n++] = hybridpq; arms[n++] = hybrid; arms[n++] = tls13; arms[n++] = tls12; break;
         case 11: arms[n++] = authso; arms[n++] = authsopq; break;
         case 12: arms[n++] = authsopre; arms[n++] = authso; break;
+        case 13: arms[n++] = final_two; arms[n++] = final_one; break;
         case 0:
         default: arms[n++] = tls13; arms[n++] = tls12; break;
     }
@@ -142,6 +148,12 @@ static void client_task(void *args)
 #endif
     const bool auth_ready = (app_hybrid_auth_init() == 0);
     if (app_keyshare_init() != 0) PRINTF("keyshare: helper task not started, key shares generated inline\r\n");
+#if APP_DUALCORE
+    if (auth_ready && app_dualcore_start() == 0)
+    {
+        (void)app_hybrid_auth_dualcore_selftest();
+    }
+#endif
 #if APP_PQC_BENCH
     app_hybrid_auth_bench();
 #endif
@@ -199,6 +211,7 @@ static void client_task(void *args)
         /* Route ML-KEM's NTTs to the PowerQuad for this arm (read by the mlkem-native hook). */
         app_pq_ntt_enabled   = arm->pq_ntt;
         app_keyshare_enabled = arm->precompute;
+        app_dualcore_enabled = arm->dualcore;
 
         /* Round timer: TCP connect + TLS handshake [+ auth] + HTTP request/response. */
         const TickType_t t_round_start = xTaskGetTickCount();
@@ -420,6 +433,19 @@ static void client_task(void *args)
         if (ks_gen + ks_fallback > 0U)
             PRINTF("Precomputed key shares: %lu generated during TCP connect, %lu used, %lu not ready in time (inline fallback); helper stack peak %lu B\r\n",
                    (unsigned long)ks_gen, (unsigned long)ks_taken, (unsigned long)ks_fallback, (unsigned long)ks_stack);
+    }
+    {
+        const app_dualcore_stats_t *d = &app_dualcore_stats;
+        if (d->sign_core0_wins + d->sign_core1_wins + d->sign_core1_err + d->dec_offloaded + d->dec_fallbacks > 0U)
+        {
+            PRINTF("Dual core: ML-DSA races won by core 0: %lu, by core 1: %lu (core 1 aborted %lu, both finished %lu, "
+                   "core 1 errors %lu); ML-KEM decaps on core 1: %lu (fallbacks %lu); core 1 arena peak %lu B\r\n",
+                   (unsigned long)d->sign_core0_wins, (unsigned long)d->sign_core1_wins, (unsigned long)d->sign_aborted,
+                   (unsigned long)d->sign_both_done, (unsigned long)d->sign_core1_err, (unsigned long)d->dec_offloaded,
+                   (unsigned long)d->dec_fallbacks, (unsigned long)d->core1_arena_peak);
+        }
+        PRINTF("ML-DSA working-memory arena on core 0: peak %lu B of %lu B\r\n", (unsigned long)app_mld_arena_peak(),
+               (unsigned long)APP_MLD_ARENA_BYTES);
     }
     PRINTF("=== Done ===\r\n");
 

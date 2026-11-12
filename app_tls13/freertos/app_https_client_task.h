@@ -35,7 +35,9 @@ typedef struct https_client_task_context
      *  11 = hybrid KEX + hybrid AUTH sign-only (ML-DSA-44 + ECDSA), ML-KEM NTT on CPU vs on the
      *       PowerQuad (2 arms, the deployment configuration and its accelerated variant)
      *  12 = deployment configuration with the hybrid key share precomputed during the TCP
-     *       connect vs generated inline (2 arms) */
+     *       connect vs generated inline (2 arms)
+     *  13 = deployment configuration + precompute, with core 1 (ML-DSA signing race, ML-KEM
+     *       decapsulation on core 1) vs single core (2 arms); needs the dual-core build */
     uint32_t tls_mode;
 } https_client_task_context_t;
 

@@ -621,6 +621,78 @@ The average is closer because the final configuration's tail is longer: ML-DSA s
 (auth max 294 ms) and the larger request (3.3 KB signature header) stretch the worst rounds,
 while the original's tail is network only.
 
+## Run 23 — step 6: dual core, first run (core 1 image stale), 100 rounds
+
+First dual-core run (`EXAMPLE_TLS_MODE=13`: `FINAL 2-core` = deployment configuration +
+precompute + ML-DSA signing race with core 1 + ML-KEM decapsulation on core 1, vs `FINAL 1-core`
+= the run 21 configuration). Core 1 booted, the self-test passed (sign/verify, abort, race,
+decaps) and all 100 rounds succeeded, but the final counters exposed a build bug: core 1's
+arena peak read 56 960 B with a 32 KB arena, and 4 "core 1 errors". The Makefile had defined
+the core 1 dependency *after* the `build:` rule, so make never ran it and the board carried the
+previous core 1 image, whose allocator did not reclaim per-attempt buffers; long signatures ran
+out of memory on core 1 and core 0 restarted from scratch (auth tails of 345–512 ms). Medians:
+auth 57 vs 97 ms, round 254 vs 289 ms. Superseded by run 24.
+
+**Server change the same morning:** the challenge server's certificate was re-issued at
+2026-11-12 08:44 with an ECDSA P-256 key (previously RSA-3072); the handshake now carries
+1 941 B from the server instead of 2 885 B, negotiates AES-256-GCM-SHA384, and the client
+verifies an ECDSA CertificateVerify (20 ms in software) instead of an RSA one (4.4 ms). Runs
+from 23 on are therefore not directly comparable with earlier runs; compare arms within a run.
+
+## Run 24 — step 6: **dual core**, both images rebuilt, four arms' worth of checks, 100 rounds
+
+Same mode 13. Boot and self-test:
+
+```
+=== Dual core: starting core 1 (image at 0x000c0000, shared block at 0x20015780) ===
+  core 1 ready: ping ok in 0 ms, core 1 clock 150 MHz
+=== Dual-core self-test ===
+  core 1 signs, core 0 verifies     : PASS  (29 ms wall, 4372700 cycles on core 1, arena peak 9600 B)
+  abort while core 1 is signing     : PASS  (parked 0 ms after the request, status 3)
+  signing race x3, verified         : PASS  (won by core 0: 1, core 1: 2)
+  ML-KEM-768 decaps on core 1       : PASS  (1659036 cycles on core 1)
+  hybrid shared secret, core 0 only : 15.096 ms (ML-KEM decaps then X25519)
+  hybrid shared secret, two cores   : 11.334 ms (decaps on core 1 || X25519 on core 0)
+=== dual-core self-test passed ===
+```
+
+| Arm | TCP connect | TLS handshake | Hybrid auth (med / avg / max) | HTTP GET | Full round (med / avg) | ok |
+|---|---|---|---|---|---|---|
+| **FINAL 2-core** | 22 | **51** | **55 / 63 / 243** | 60 | **201 / 284** | 50/50 |
+| FINAL 1-core | 21 | 56 | 60 / 92 / 359 | 59 | 254 / 323 | 50/50 |
+
+```
+Dual core: ML-DSA races won by core 0: 30, by core 1: 20 (core 1 aborted 23, both finished 7, core 1 errors 0);
+           ML-KEM decaps on core 1: 50 (fallbacks 0); core 1 arena peak 9600 B
+ML-DSA working-memory arena on core 0: peak 9600 B of 32768 B
+Auth (avg): ML-DSA sign 48.9 ms (2-core) vs 77.7 ms (1-core)
+```
+
+Network: stalls in rounds 1–3, 7–9 and 12 (TCP connect up to 1.2 s) inflate avg/max of both
+arms equally; medians are clean (TCP connect 21–22 ms).
+
+### Analysis
+
+* **Both cores cooperate on every connection**: 50/50 decapsulations ran on core 1 while core 0
+  did X25519 (handshake −5 ms, matching the self-test's 15.1 → 11.3 ms), and 50/50 signatures
+  were raced (core 0 won 30, core 1 won 20, no errors; 23 core 1 attempts abandoned within a
+  Keccak permutation, 7 finished in the window between core 0 finishing and the abort).
+* **The race helps the average and the tail far more than the median**, because signing time
+  comes in 23.7 ms attempts: the median case needs two attempts on either arm (55 vs 60 ms), but
+  the average ML-DSA signing time drops from 77.7 to 48.9 ms (−29 ms) and the worst auth from
+  359 to 243 ms. P(first attempt succeeds) is ≈ 0.27 per core; with two independent racers it is
+  ≈ 0.46, which is why the 2-core arm has 22 rounds at ≤ 45 ms against 13 for the 1-core arm.
+* **Full round median 201 vs 254 ms (−53 ms, −21 %)** in the same run against the same server:
+  the sum of the median gains is only ~10 ms, the rest is the tail of the auth distribution no
+  longer landing inside the median round.
+* Core 1 executes from the same flash as core 0: its ML-DSA attempt costs the same cycles as on
+  core 0 (4.37 M cycles for a 1-attempt signature ≈ 29 ms wall incl. mailbox) but its ML-KEM
+  decapsulation is 20 % slower (1.66 M vs 1.38 M cycles), presumably flash-fetch contention.
+* Memory: ML-DSA-44 signing with REDUCE_RAM peaks at **9.6 KB** of working memory (measured
+  with the arena on both cores) — far below the 44 KB estimate used earlier; core 1 needs 59 KB
+  of its 104 KB RAM in total; core 0's static RAM is 298 of 312 KB with the 32 KB arena carved
+  from the FreeRTOS heap.
+
 ## Comparison (medians)
 
 ### Against the agreed baseline (TLS 1.2, seed per connection, clean network: **266 ms**)
@@ -635,7 +707,8 @@ while the original's tail is network only.
 | same, with self-verify (run 13) | 72 | 94 | 261 | −5 ms (−2 %) |
 | TLS 1.3 + X25519MLKEM768 + ML-DSA-**65**/ECDSA auth, with self-verify (run 10) | 77 | 155 | 379 | **+113 ms — target missed** |
 | TLS 1.3 + X25519MLKEM768, NTTs on the **PowerQuad** (run 18; CPU-NTT arm of the same run: 179) | 109 | – | 217 | −49 ms, but **+38 ms vs CPU NTT** — negative result |
-| **TLS 1.3 + X25519MLKEM768 + ML-DSA-44/ECDSA auth, key share precomputed during TCP connect** (run 21, quiet network; inline arm of the same run: 224) | **52** | 77 | **201** | **−65 ms (−24 %)** — final deployment configuration |
+| **TLS 1.3 + X25519MLKEM768 + ML-DSA-44/ECDSA auth, key share precomputed during TCP connect** (run 21, quiet network; inline arm of the same run: 224) | **52** | 77 | **201** | **−65 ms (−24 %)** — final single-core configuration |
+| same + **dual core** (ML-DSA signing race, ML-KEM decaps on core 1) — run 24, new ECDSA server cert; single-core arm of the same run: 254 | 51 | 55 (avg 63) | **201** (1-core arm: 254) | **−53 ms (−21 %) vs single core in the same run**; not comparable to pre-change server runs |
 
 → **Hybrid post-quantum key establishment *and* hybrid authentication (ML-DSA-44 + ECDSA P-256,
 device signing) meet the "no increase in end-to-end latency" goal on the FRDM-MCXN947, without

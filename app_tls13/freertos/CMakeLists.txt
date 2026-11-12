@@ -32,6 +32,13 @@ mcux_add_source(
             # Hybrid key share precomputed during the TCP connect
             examples/focal_challenge/freertos/app_keyshare.h
             examples/focal_challenge/freertos/app_keyshare.c
+            # Step 6: dual core (core 1 worker in app_core1/, shared block, arena, abort hook)
+            examples/focal_challenge/freertos/app_dualcore.h
+            examples/focal_challenge/freertos/app_dualcore.c
+            examples/focal_challenge/freertos/app_dualcore_shm.h
+            examples/focal_challenge/freertos/app_mld_arena.h
+            examples/focal_challenge/freertos/app_mld_arena.c
+            examples/focal_challenge/freertos/app_mldsa_fips202_backend.h
             # ML-KEM NTT on the PowerQuad matrix engine (mlkem-native native backend)
             examples/focal_challenge/freertos/app_pq_ntt.h
             examples/focal_challenge/freertos/app_pq_ntt.c
@@ -57,6 +64,19 @@ mcux_add_include(
 mcux_add_macro(
     CC "-DMLD_CONFIG_FILE=\\\"app_mldsa_config.h\\\""
 )
+
+# Step 6: dual core. The Makefile builds app_core1/ first and passes the
+# directory holding core1_image.bin; fsl_incbin.S embeds it into m_core1_image
+# (flash 0x000C0000) and the multicore manager boots core 1 from there.
+if(DEFINED APP_CORE1_BIN_DIR)
+    mcux_add_include(
+        BASE_PATH ${APP_CORE1_BIN_DIR}
+        INCLUDES .
+    )
+    mcux_add_macro(
+        CC "-DAPP_DUALCORE=1 -DMCMGR_BUSY_POLL_COUNT=200000"
+    )
+endif()
 
 # mlkem-native configuration: ML-KEM-768 only, portable C (no asm backend on
 # Cortex-M33), deterministic API only so no global randombytes() is needed —

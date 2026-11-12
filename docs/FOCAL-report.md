@@ -21,6 +21,7 @@ Source and patches: this repository (`app/` = untouched baseline, `app_tls13/` =
 | same with ML-DSA-65 instead of ML-DSA-44 | 379 ms | +42 % | yes, but misses target |
 | Hybrid key exchange with the ML-KEM NTTs on the **PowerQuad** accelerator (§5.2.1) | 217 ms (CPU-NTT arm of the same run: 179) | −18 % | yes, but +38 ms vs the CPU NTT |
 | **Final: hybrid key exchange + hybrid device authentication, key share precomputed during the TCP connect** (§4, item 6; run 21) | **201 ms** (inline arm of the same run: 224); handshake 52 ms ≈ classical TLS 1.3 | **−24 %** | yes, 50/50, 0 fallbacks |
+| Same, **using both Cortex-M33 cores** (§4, item 7; run 24): ML-DSA signing race on both cores, ML-KEM decapsulation on core 1 during X25519 | **201 ms** vs **254 ms** for the single-core arm of the same run; auth average 63 vs 92 ms, worst 243 vs 359 ms | **−21 % vs single core** (server certificate changed that day, so not chained to the 266 ms figure) | yes, 50/50, 0 core 1 errors |
 
 **Final side-by-side (same network session, runs 22 and 21):**
 
@@ -191,6 +192,26 @@ And one that gave latency back without touching the maths:
    mbedTLS here has no threading support, so the client waits for the helper right after
    `connect()` returns — the two tasks never use PSA at the same time.
 
+7. **Use the second core.** The MCXN947 has two Cortex-M33 cores; the original firmware uses
+   one. Core 1 runs a 30 KB bare-metal worker (`app_core1/`, embedded in core 0's flash image
+   at 0x000C0000 and started through NXP's multicore manager with the address of a shared
+   command block as its startup word; signalling via the mailbox interrupt). Two uses:
+   * **ML-DSA signing race.** Signing is a loop of ~23.7 ms attempts, each succeeding with
+     probability ≈ 0.27, which is where the long tail comes from. Both cores sign the same
+     message with independent randomness; the first valid signature wins and the other attempt
+     is abandoned — core 1 by a mailbox event, core 0 by a `longjmp` out of the library from
+     inside its next Keccak permutation (mldsa-native's FIPS-202 backend hook, ≈ 0.1 ms
+     granularity), with working memory in a bump arena that one reset reclaims and wipes.
+     Run 24: ML-DSA signing average 77.7 → 48.9 ms, worst auth 359 → 243 ms; the median moves
+     little (60 → 55 ms) because it sits on the two-attempt quantum either way.
+   * **ML-KEM decapsulation on core 1 while core 0 computes X25519** (hook in the patched key
+     schedule): hybrid shared secret 15.1 → 11.3 ms, handshake −5 ms.
+   Together: full round **254 → 201 ms (−21 %)** against the single-core arm of the same run,
+   100/100 connections, every signature verified in the self-test. Costs: 30 KB flash and 59 KB
+   of core 1's own RAM, a 3.4 KB shared block, one more image in the build. Found on the way:
+   ML-DSA-44 signing with `MLD_CONFIG_REDUCE_RAM` actually peaks at **9.6 KB** of working memory,
+   not the ~44 KB assumed from the library documentation.
+
 ### 4.1 Optimisations applied — summary
 
 Everything that was changed to get from 266 ms to the final numbers, in the order it was done,
@@ -205,7 +226,8 @@ connect + handshake + auth + GET, medians.
 | 4 | **ML-DSA-44 instead of ML-DSA-65** | NIST category 2 signature instead of 3; 23.7 vs 36.5 ms per signing attempt, 2420 vs 3309 B signature | round 379 → 289 ms (with self-verify) | 10, 11 | `app_mldsa_config.h` |
 | 5 | **Sign-only device auth (no on-device self-verify)** | The peer verifies; the device no longer runs ML-DSA verify (15 ms) + ECDSA verify (20 ms) after signing | round 261 → **238 ms** | 12, 13 | `hybrid_auth = 2` arm, `app_hybrid_auth.c` |
 | 6 | **Key share generated during the TCP connect** | ML-KEM keypair + X25519 keygen run in a helper task while the client waits for the SYN-ACK | handshake 73 → **56 ms** (−17), hybrid handshake = classical TLS 1.3 | 20 | `app_keyshare.c`, hook in the SDK patch |
-| 7 | Memory sizing for PQC (correctness, not speed) | Client task stack 16 → 32 KB; heap 96 → 192 KB; ML-DSA working memory on the heap with a 64-byte-aligned allocator (`REDUCE_RAM`); stack-overflow checking actually enabled | from silent hangs to 0 failed rounds in every CPU-NTT arm of runs 7–20 | 7, 20 | `main.c`, `prj.conf`, `app_hybrid_auth.c` |
+| 7 | **Both cores: ML-DSA signing race + ML-KEM decapsulation on core 1** | Core 1 worker firmware, mailbox signalling, abortable signing via the Keccak hook | round 254 → **201 ms** (−21 %) vs single core, same run; auth average −29 ms, worst −116 ms | 24 | `app_core1/`, `app_dualcore.c`, `app_mld_arena.c`, `app_mldsa_fips202_backend.h`, hook in the SDK patch |
+| 8 | Memory sizing for PQC (correctness, not speed) | Client task stack 16 → 32 KB; heap 96 → 192 KB; ML-DSA working memory on the heap with a 64-byte-aligned allocator (`REDUCE_RAM`); stack-overflow checking actually enabled | from silent hangs to 0 failed rounds in every CPU-NTT arm of runs 7–20 | 7, 20 | `main.c`, `prj.conf`, `app_hybrid_auth.c` |
 
 Net effect on the deployment configuration (hybrid KEX + ML-DSA-44/ECDSA device signature):
 **266 ms baseline → 238 ms (run 13) → 201 ms with #6 (run 21, quiet network; inline arm of
@@ -221,8 +243,7 @@ Tried and measured, **not adopted**:
 | ML-DSA-65 | 379 ms, misses target | signing 155 ms average in portable C | 10 |
 
 Identified, **not done** (see §5.3 for the expected gains): ELS/PKC hardware elliptic-curve
-(≈ 15 ms), assembly Keccak (≈ 5 ms KEX, 10–20 ms signing), dual-core ML-DSA signing race
-(≈ 25 ms off the median, halves the tail).
+(≈ 15 ms), assembly Keccak (≈ 5 ms KEX, 10–20 ms signing).
 
 ---
 
@@ -333,6 +354,7 @@ Keccak hardware on this part.
 | **Optimised Keccak assembly** for Cortex-M (2–3× over portable C; mlkem-native/mldsa-native accept a custom FIPS-202 backend) | ≈ 4–5 ms (ML-KEM), ≈ 10–20 ms (ML-DSA sign) | medium | not done |
 | TLS 1.3, DRBG-once, TCP window (§4) | **−91 ms** | trivial | **done** |
 | Key share generated during the TCP connect (§4, item 6) | **−17 ms** handshake | small (helper task + hook in the key-share writer) | **done** (run 20) |
+| Second Cortex-M33 core: signing race + decapsulation offload (§4, item 7) | **−53 ms** round median vs single core; auth average −29 ms, tail halved | high (second image, multicore manager, abort hook) | **done** (run 24) |
 | ML-DSA-44 instead of ML-DSA-65 | −60…−100 ms signing | one define | **done** |
 | PowerQuad NTT (§5.2.1) | **measured: +37 ms per hybrid handshake**, NTT 23.8× slower than the CPU | medium | **done — negative result**, kept as a switchable benchmark arm |
 | NPU NTT | ≤ 1 % even if exact; the supported int8 operator path is not exact; needs the eIQ Toolkit compiler | high | negative result (analysis); runtime available, compiler not obtained |
@@ -423,3 +445,5 @@ running in software!), consider Keccak assembly, ignore the NPU for lattice math
 | 20 | deployment config, key share precomputed during TCP connect vs inline, 50 + 50 | 243 / 262 ms | handshake 56 vs 73 ms (−17); 50/50 ready in time |
 | **21** | **same, quiet network** | **201** / 224 ms | **final headline**; handshake 52 vs 71 |
 | **22** | **original firmware, unmodified TLS path (`app_legacy/`), 100 rounds, same session** | **247** ms median, 266 avg | final comparison: 247 → 201 ms (−19 %) |
+| 23 | dual core, first run (stale core 1 image, Makefile ordering bug) | 254 / 289 ms | superseded; server certificate changed to ECDSA that morning |
+| **24** | **dual core: signing race + decaps on core 1 vs single core, 50 + 50** | **201** / 254 ms | **−21 % vs single core**; 100/100, 0 core 1 errors |

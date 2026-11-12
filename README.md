@@ -12,6 +12,10 @@ MCX N947's NPU IP.
 * [docs/benchmarks.md](docs/benchmarks.md) — raw log of every benchmark run.
 * `app/` is the untouched baseline; `app_tls13/` is the migrated firmware (TLS 1.3, X25519MLKEM768, ML-DSA-44 + ECDSA device auth).
   Build it with `make patch-sdk && make flash APP_NAME=app_tls13`.
+* `app_core1/` is the bare-metal crypto worker for the second Cortex-M33 core (ML-DSA signing race,
+  ML-KEM decapsulation). `make flash APP_NAME=app_tls13` builds it first (`build-core1`, release config)
+  and embeds `core1_image.bin` into the core 0 image at flash 0x000C0000; `DUALCORE=0` gives a
+  single-core app_tls13 build. Needs the multicore manager: `west update mcux-sdk-middleware-multicore mcux-mcmgr`.
 * `app_legacy/` is the organisers' original code from the delivered archive with only an IPv4 address and a
   100-round timing wrapper added (TLS path untouched) — the reference for the final comparison (run 22).
   Build it with `make flash APP_NAME=app_legacy`.

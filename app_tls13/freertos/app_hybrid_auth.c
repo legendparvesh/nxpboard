@@ -21,6 +21,11 @@
 #include "mldsa_native.h"
 #include "app_hybrid_auth.h"
 
+#include <setjmp.h>
+#include "task.h"
+#include "app_dualcore.h"
+#include "app_mld_arena.h"
+
 /* Sizes and names follow the parameter set chosen in app_mldsa_config.h. */
 #define MLD_STR_(x) #x
 #define MLD_STR(x) MLD_STR_(x)
@@ -33,26 +38,18 @@
 /* ------------------------------------------------------------------------- */
 /* Heap-backed aligned allocator for mldsa-native's large working buffers.   */
 /* ------------------------------------------------------------------------- */
-#define MLD_HEAP_ALIGN 64U
-
-void *app_mld_aligned_alloc(size_t size)
+/* mldsa-native's working buffers come from a bump arena (app_mld_arena.c:
+ * provides app_mld_aligned_alloc/free), carved from the FreeRTOS heap once.
+ * A bump arena is what lets the dual-core race abandon an attempt safely. */
+static int arena_init(void)
 {
-    uint8_t *raw = pvPortMalloc(size + MLD_HEAP_ALIGN + sizeof(void *));
-    if (raw == NULL)
+    void *buf = pvPortMalloc(APP_MLD_ARENA_BYTES + 64);
+    if (buf == NULL)
     {
-        return NULL;
+        return -1;
     }
-    uintptr_t aligned = ((uintptr_t)raw + sizeof(void *) + MLD_HEAP_ALIGN - 1U) & ~(uintptr_t)(MLD_HEAP_ALIGN - 1U);
-    ((void **)aligned)[-1] = raw; /* stash the raw pointer just below the aligned block */
-    return (void *)aligned;
-}
-
-void app_mld_aligned_free(void *p)
-{
-    if (p != NULL)
-    {
-        vPortFree(((void **)p)[-1]);
-    }
+    app_mld_arena_init(buf, APP_MLD_ARENA_BYTES + 64);
+    return 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -109,6 +106,11 @@ int app_hybrid_auth_init(void)
     uint8_t seed[MLDSA_SEEDBYTES];
     psa_generate_random(seed, sizeof(seed));
     uint32_t t0 = dwt_now();
+    if (arena_init() != 0)
+    {
+        PRINTF("hybrid_auth: no memory for the ML-DSA arena\r\n");
+        return -1;
+    }
     int rc      = mldsa_keypair_internal(s_mldsa_pk, s_mldsa_sk, seed);
     uint32_t dt = dwt_now() - t0;
     memset(seed, 0, sizeof(seed));
@@ -149,6 +151,94 @@ int app_hybrid_auth_init(void)
 /* ------------------------------------------------------------------------- */
 /* Sign + self-verify                                                        */
 /* ------------------------------------------------------------------------- */
+/* --- Step 6: dual-core signing race ---------------------------------------
+ * Core 1 signs the same message with its own randomness while core 0 signs
+ * here. Whoever finishes first wins; the other attempt is abandoned: core 1 by
+ * an abort event, core 0 by longjmp out of the library from the Keccak hook
+ * (app_mldsa_fips202_backend.h) that fires when core 1 reports done. */
+static jmp_buf s_race_jmp;
+static volatile int s_race_armed;
+
+int app_mld_abort_poll(void)
+{
+    /* Abandon core 0's attempt only for a usable result from core 1; if core 1
+     * reports an error or an abort, core 0 simply keeps signing. */
+    return s_race_armed && app_dualcore_done() && app_dualcore_shm()->status == APP_DC_DONE;
+}
+
+void app_mld_abort_jump(void)
+{
+    longjmp(s_race_jmp, 1);
+}
+
+#if APP_DUALCORE
+static int sign_race(const uint8_t *msg, size_t msg_len, const uint8_t *rnd0, int *winner)
+{
+    volatile app_dualcore_shm_t *shm = app_dualcore_shm();
+    uint8_t rnd1[MLDSA_RNDBYTES];
+    volatile int rc = -1;
+
+    psa_generate_random(rnd1, sizeof(rnd1));
+    shm->msg     = msg;
+    shm->msg_len = (uint32_t)msg_len;
+    shm->pre     = s_mld_prefix;
+    shm->pre_len = (uint32_t)s_mld_prefix_len;
+    shm->sk      = s_mldsa_sk;
+    shm->sig_len = 0;
+    memcpy((void *)shm->rnd, rnd1, sizeof(rnd1));
+    memset(rnd1, 0, sizeof(rnd1));
+
+    *winner = 0;
+    app_mld_arena_reset(0);
+    if (app_dualcore_cmd(APP_DC_CMD_SIGN) != 0)
+    {
+        /* core 1 busy or gone: sign alone */
+        app_dualcore_stats.sign_core1_err++;
+        return mldsa_signature_internal(s_mldsa_sig, msg, msg_len, s_mld_prefix, s_mld_prefix_len, rnd0, s_mldsa_sk, 0);
+    }
+
+    s_race_armed = 1;
+    if (setjmp(s_race_jmp) == 0)
+    {
+        rc = mldsa_signature_internal(s_mldsa_sig, msg, msg_len, s_mld_prefix, s_mld_prefix_len, rnd0, s_mldsa_sk, 0);
+        s_race_armed = 0;
+        /* core 0 finished first (or both did): stop core 1 and let it park */
+        app_dualcore_abort();
+        int st = app_dualcore_wait(300);
+        if (st == APP_DC_DONE) app_dualcore_stats.sign_both_done++;
+        else if (st == APP_DC_ABORTED) app_dualcore_stats.sign_aborted++;
+        else app_dualcore_stats.sign_core1_err++;
+        app_dualcore_stats.sign_core0_wins++;
+    }
+    else
+    {
+        /* core 1 reported first: core 0's attempt was abandoned inside the library */
+        s_race_armed = 0;
+        app_mld_arena_reset(1);
+        int st = app_dualcore_wait(10);
+        if (st == APP_DC_DONE && shm->sig_len == MLD_SIG_BYTES)
+        {
+            memcpy(s_mldsa_sig, (const void *)shm->sig, MLD_SIG_BYTES);
+            rc      = 0;
+            *winner = 1;
+            app_dualcore_stats.sign_core1_wins++;
+            app_dualcore_stats.core1_sign_cycles_last = shm->cycles;
+        }
+        else
+        {
+            app_dualcore_stats.sign_core1_err++;
+            app_mld_arena_reset(0);
+            rc = mldsa_signature_internal(s_mldsa_sig, msg, msg_len, s_mld_prefix, s_mld_prefix_len, rnd0, s_mldsa_sk, 0);
+        }
+    }
+    app_dualcore_stats.core1_arena_peak = shm->arena_peak;
+    memset((void *)shm->rnd, 0, sizeof(shm->rnd));
+    memset((void *)shm->sig, 0, sizeof(shm->sig));
+    shm->sig_len = 0;
+    return rc;
+}
+#endif /* APP_DUALCORE */
+
 int app_hybrid_auth_sign_verify(const uint8_t *msg, size_t msg_len, app_hybrid_auth_result_t *res,
                                 char *hdr, size_t hdr_cap, int self_verify)
 {
@@ -162,7 +252,19 @@ int app_hybrid_auth_sign_verify(const uint8_t *msg, size_t msg_len, app_hybrid_a
     uint8_t rnd[MLDSA_RNDBYTES];
     psa_generate_random(rnd, sizeof(rnd));
     uint32_t t0 = dwt_now();
-    int rc = mldsa_signature_internal(s_mldsa_sig, msg, msg_len, s_mld_prefix, s_mld_prefix_len, rnd, s_mldsa_sk, 0);
+    int rc;
+    res->mldsa_core = 0;
+#if APP_DUALCORE
+    if (app_dualcore_enabled && app_dualcore_ready())
+    {
+        rc = sign_race(msg, msg_len, rnd, &res->mldsa_core);
+    }
+    else
+#endif
+    {
+        app_mld_arena_reset(0);
+        rc = mldsa_signature_internal(s_mldsa_sig, msg, msg_len, s_mld_prefix, s_mld_prefix_len, rnd, s_mldsa_sk, 0);
+    }
     res->mldsa_sign_us = cyc_to_us(dwt_now() - t0);
     memset(rnd, 0, sizeof(rnd));
     if (rc != 0)
@@ -273,6 +375,163 @@ static void print_stats(const char *label, uint32_t *us, int n, const char *note
 }
 
 #define AUTH_BENCH_RUNS 10
+
+/* ------------------------------------------------------------------------- */
+/* Step 6: dual-core self-test                                               */
+/* ------------------------------------------------------------------------- */
+int app_hybrid_auth_dualcore_selftest(void)
+{
+#if APP_DUALCORE
+    extern int mlkem_keypair_derand(uint8_t *pk, uint8_t *sk, const uint8_t *coins);
+    extern int mlkem_enc_derand(uint8_t *ct, uint8_t *ss, const uint8_t *pk, const uint8_t *coins);
+    extern int mbedtls_ssl_tls13_hybrid_mlkem_dec_begin(const unsigned char *ct, const unsigned char *sk);
+    extern int mbedtls_ssl_tls13_hybrid_mlkem_dec_end(unsigned char *ss);
+
+    if (!s_ready || !app_dualcore_ready())
+    {
+        return -1;
+    }
+    volatile app_dualcore_shm_t *shm = app_dualcore_shm();
+    uint8_t msg[32], rnd[MLDSA_RNDBYTES];
+    int fails = 0, ok, st;
+    TickType_t t0;
+    uint32_t ms;
+
+    psa_generate_random(msg, sizeof(msg));
+    PRINTF("\r\n=== Dual-core self-test ===\r\n");
+
+    /* 1. core 1 signs alone, core 0 verifies */
+    psa_generate_random(rnd, sizeof(rnd));
+    shm->msg     = msg;
+    shm->msg_len = sizeof(msg);
+    shm->pre     = s_mld_prefix;
+    shm->pre_len = (uint32_t)s_mld_prefix_len;
+    shm->sk      = s_mldsa_sk;
+    memcpy((void *)shm->rnd, rnd, sizeof(rnd));
+    t0 = xTaskGetTickCount();
+    st = (app_dualcore_cmd(APP_DC_CMD_SIGN) == 0) ? app_dualcore_wait(3000) : -1;
+    ms = (uint32_t)(xTaskGetTickCount() - t0) * portTICK_PERIOD_MS;
+    ok = (st == APP_DC_DONE) && shm->sig_len == MLD_SIG_BYTES &&
+         mldsa_verify((const uint8_t *)shm->sig, msg, sizeof(msg), NULL, 0, s_mldsa_pk) == 0;
+    PRINTF("  core 1 signs, core 0 verifies     : %s  (%lu ms wall, %lu cycles on core 1, arena peak %lu B)\r\n",
+           ok ? "PASS" : "FAIL", (unsigned long)ms, (unsigned long)shm->cycles, (unsigned long)shm->arena_peak);
+    fails += !ok;
+
+    /* 2. abort: start a signature on core 1, abandon it after 5 ms */
+    psa_generate_random(rnd, sizeof(rnd));
+    memcpy((void *)shm->rnd, rnd, sizeof(rnd));
+    if (app_dualcore_cmd(APP_DC_CMD_SIGN) == 0)
+    {
+        vTaskDelay(pdMS_TO_TICKS(5));
+        t0 = xTaskGetTickCount();
+        app_dualcore_abort();
+        st = app_dualcore_wait(500);
+        ms = (uint32_t)(xTaskGetTickCount() - t0) * portTICK_PERIOD_MS;
+    }
+    else
+    {
+        st = -1;
+        ms = 0;
+    }
+    ok = (st == APP_DC_ABORTED);
+    PRINTF("  abort while core 1 is signing     : %s  (parked %lu ms after the request, status %d)\r\n",
+           ok ? "PASS" : "FAIL", (unsigned long)ms, st);
+    fails += !ok;
+
+    /* 3. the race, three times, each result verified */
+    {
+        int wins[2] = {0, 0}, race_ok = 1;
+        for (int i = 0; i < 3; i++)
+        {
+            int core = 0;
+            psa_generate_random(rnd, sizeof(rnd));
+            int rc = sign_race(msg, sizeof(msg), rnd, &core);
+            ok     = (rc == 0) && mldsa_verify(s_mldsa_sig, msg, sizeof(msg), NULL, 0, s_mldsa_pk) == 0;
+            if (ok) wins[core]++;
+            race_ok &= ok;
+        }
+        PRINTF("  signing race x3, verified         : %s  (won by core 0: %d, core 1: %d)\r\n",
+               race_ok ? "PASS" : "FAIL", wins[0], wins[1]);
+        fails += !race_ok;
+    }
+
+    /* 4. ML-KEM-768 decapsulation on core 1 */
+    {
+        uint8_t *pk = pvPortMalloc(1184), *sk = pvPortMalloc(2400), *ct = pvPortMalloc(1088);
+        uint8_t ss0[32], ss1[32], coins[64];
+        ok = 0;
+        if (pk && sk && ct)
+        {
+            volatile int sink = 0;
+            psa_generate_random(coins, sizeof(coins));
+            sink |= mlkem_keypair_derand(pk, sk, coins);
+            psa_generate_random(coins, 32);
+            sink |= mlkem_enc_derand(ct, ss0, pk, coins);
+            int prev             = app_dualcore_enabled;
+            app_dualcore_enabled = 1;
+            ok = (sink == 0) && mbedtls_ssl_tls13_hybrid_mlkem_dec_begin(ct, sk) == 0 &&
+                 mbedtls_ssl_tls13_hybrid_mlkem_dec_end(ss1) == 0 && memcmp(ss0, ss1, 32) == 0;
+            app_dualcore_enabled = prev;
+        }
+        PRINTF("  ML-KEM-768 decaps on core 1       : %s  (%lu cycles on core 1)\r\n", ok ? "PASS" : "FAIL",
+               (unsigned long)shm->cycles);
+        fails += !ok;
+
+        /* 5. what the handshake gains: hybrid shared secret, sequential on core 0
+         *    (decaps then X25519) vs decaps on core 1 while core 0 does X25519. */
+        if (ok)
+        {
+            extern int mlkem_dec(uint8_t *ss, const uint8_t *ct, const uint8_t *sk);
+            psa_key_attributes_t attr = psa_key_attributes_init();
+            psa_key_id_t k1 = 0, k2 = 0;
+            uint8_t pub2[32], x[32];
+            size_t len = 0;
+            psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DERIVE);
+            psa_set_key_algorithm(&attr, PSA_ALG_ECDH);
+            psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_MONTGOMERY));
+            psa_set_key_bits(&attr, 255);
+            if (psa_generate_key(&attr, &k1) == PSA_SUCCESS && psa_generate_key(&attr, &k2) == PSA_SUCCESS &&
+                psa_export_public_key(k2, pub2, sizeof(pub2), &len) == PSA_SUCCESS)
+            {
+                uint32_t best_seq = UINT32_MAX, best_par = UINT32_MAX;
+                int prev             = app_dualcore_enabled;
+                app_dualcore_enabled = 1;
+                for (int i = 0; i < 5; i++)
+                {
+                    uint32_t t0 = dwt_now();
+                    (void)mlkem_dec(ss1, ct, sk);
+                    (void)psa_raw_key_agreement(PSA_ALG_ECDH, k1, pub2, 32, x, sizeof(x), &len);
+                    uint32_t dt = dwt_now() - t0;
+                    if (dt < best_seq) best_seq = dt;
+
+                    t0 = dwt_now();
+                    (void)mbedtls_ssl_tls13_hybrid_mlkem_dec_begin(ct, sk);
+                    (void)psa_raw_key_agreement(PSA_ALG_ECDH, k1, pub2, 32, x, sizeof(x), &len);
+                    (void)mbedtls_ssl_tls13_hybrid_mlkem_dec_end(ss1);
+                    dt = dwt_now() - t0;
+                    if (dt < best_par) best_par = dt;
+                }
+                app_dualcore_enabled = prev;
+                PRINTF("  hybrid shared secret, core 0 only : %lu.%03lu ms (ML-KEM decaps then X25519)\r\n",
+                       (unsigned long)(best_seq / 150000), (unsigned long)((best_seq / 150) % 1000));
+                PRINTF("  hybrid shared secret, two cores   : %lu.%03lu ms (decaps on core 1 || X25519 on core 0)\r\n",
+                       (unsigned long)(best_par / 150000), (unsigned long)((best_par / 150) % 1000));
+            }
+            psa_destroy_key(k1);
+            psa_destroy_key(k2);
+        }
+        vPortFree(ct);
+        vPortFree(sk);
+        vPortFree(pk);
+    }
+
+    memset(&app_dualcore_stats, 0, sizeof(app_dualcore_stats)); /* the benchmark starts from zero */
+    PRINTF("=== dual-core self-test %s ===\r\n", fails ? "FAILED" : "passed");
+    return fails ? -1 : 0;
+#else
+    return -1;
+#endif
+}
 
 void app_hybrid_auth_bench(void)
 {

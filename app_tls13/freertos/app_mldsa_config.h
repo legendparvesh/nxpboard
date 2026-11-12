@@ -33,6 +33,11 @@ void app_mld_aligned_free(void *p);
 #endif
 
 /* Everything else: library defaults. */
+/* Step 6 (dual core): hook every Keccak permutation so a signing attempt can be
+ * abandoned once the other core has produced a signature (app_mldsa_fips202_backend.h). */
+#define MLD_CONFIG_USE_NATIVE_BACKEND_FIPS202
+#define MLD_CONFIG_FIPS202_BACKEND_FILE "app_mldsa_fips202_backend.h"
+
 #include "mldsa_native_config.h"
 
 #endif /* APP_MLDSA_CONFIG_H */
