@@ -1,5 +1,7 @@
 # FOCAL hackathon — benchmark log (FRDM-MCXN947)
 
+
+
 All numbers measured on the board with the harness in `app*/freertos/app_https_client_task.c`:
 15 rounds of TCP connect + TLS handshake + `GET /frdm-mcxn947`, 200 ms pause between rounds,
 timings from the 1 ms FreeRTOS tick. **Compare medians** — single network stalls distort min/avg/max.
